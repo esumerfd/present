@@ -1,5 +1,7 @@
 # Present
 
+![Sample slide](assets/sample-slide.png)
+
 A Rust TUI presentation app. Loads structured asset directories as topics and panels, rendered in the terminal.
 
 ## Install
