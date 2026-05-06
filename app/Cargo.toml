@@ -1,0 +1,13 @@
+[package]
+name = "cinnug-presentation"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.28"
+anyhow = "1"
+mmdflux = "2.2"
+pulldown-cmark = "0.12"
+tui-big-text = "0.8.4"
+font8x8 = "0.3.1"
