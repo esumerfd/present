@@ -273,6 +273,8 @@ mod tests {
             status_message: None,
             pending_label: String::new(),
             countdown_start: None,
+            joke_index: 0,
+            joke_timer: Instant::now(),
         }
     }
 

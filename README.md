@@ -21,7 +21,7 @@ make build
 Pass the path to your assets directory:
 
 ```bash
-cargo run --manifest-path app/Cargo.toml -- --assets_dir /path/to/assets
+cargo run --manifest-path app/Cargo.toml -- --assets-dir /path/to/assets
 ```
 
 ## Asset Directory Structure
