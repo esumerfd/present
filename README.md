@@ -22,8 +22,15 @@ make build
 
 Pass the path to your assets directory:
 
+Build and install the application:
+
 ```bash
-cargo run --manifest-path app/Cargo.toml -- --assets-dir /path/to/assets
+make install
+```
+
+Then run it with the included demo assets:
+```bash
+present --assets-dir assets/demo
 ```
 
 ## Asset Directory Structure
