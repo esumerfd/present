@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-const PROMPT_TMP: &str = "/tmp/cinnug_prompt.txt";
+const PROMPT_TMP: &str = "/tmp/present_prompt.txt";
 
 pub fn send(content: &str, topic: &str, prompt_idx: usize) -> Result<String> {
     save_to_gen(content, topic, prompt_idx)?;

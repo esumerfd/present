@@ -6,7 +6,7 @@ use std::time::Instant;
 
 fn dbg(msg: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/cinnug.log") {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/present.log") {
         let _ = writeln!(f, "{msg}");
     }
 }

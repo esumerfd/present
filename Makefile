@@ -1,4 +1,4 @@
-.PHONY: build run release check clean
+.PHONY: build run release check clean install
 
 build:
 	cargo build --manifest-path app/Cargo.toml
@@ -14,3 +14,6 @@ check:
 
 clean:
 	cargo clean --manifest-path app/Cargo.toml
+
+install: release
+	cargo install --path app
