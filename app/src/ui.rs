@@ -26,29 +26,63 @@ pub fn render(f: &mut Frame, app: &App) {
     }
 }
 
+fn word_wrap(text: &str, max_chars: usize) -> Vec<Line<'static>> {
+    let max_chars = max_chars.max(10);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current.len() + 1 + word.len() <= max_chars {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(Line::from(current));
+            current = word.to_string();
+        }
+    }
+    if !current.is_empty() {
+        lines.push(Line::from(current));
+    }
+    lines
+}
+
 fn render_intro(f: &mut Frame, app: &App) {
     let area = f.area();
+    // Sextant: each character is 4 terminal columns wide, 3 rows tall
+    let max_chars = (area.width / 4) as usize;
+    let joke = crate::app::JOKES[app.joke_index];
+    let joke_lines = word_wrap(joke, max_chars);
+    let joke_height = (joke_lines.len() as u16 * 3).max(3);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),
             Constraint::Length(16),
+            Constraint::Length(joke_height),
             Constraint::Min(1),
-            Constraint::Length(4),
+            Constraint::Length(1),
         ])
         .split(area);
 
     render_scaled_name(f, "Ed", 2, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD), chunks[1]);
 
-    let joke = crate::app::JOKES[app.joke_index];
+    let big_joke = BigText::builder()
+        .pixel_size(PixelSize::Sextant)
+        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .lines(joke_lines)
+        .centered()
+        .build();
+    f.render_widget(big_joke, chunks[3]);
+
     f.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(joke, Style::default().fg(Color::Yellow))),
-            Line::from(""),
-            Line::from(Span::styled("Press SPACE to find out.", Style::default().fg(Color::DarkGray))),
-        ])
+        Paragraph::new(Line::from(Span::styled(
+            "Press SPACE to find out.",
+            Style::default().fg(Color::DarkGray),
+        )))
         .alignment(Alignment::Center),
-        chunks[3],
+        chunks[4],
     );
 }
 
