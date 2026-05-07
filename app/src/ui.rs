@@ -26,25 +26,33 @@ pub fn render(f: &mut Frame, app: &App) {
     }
 }
 
-fn word_wrap(text: &str, max_chars: usize) -> Vec<Line<'static>> {
+fn joke_lines(joke: &str, max_chars: usize) -> Vec<Line<'static>> {
     let max_chars = max_chars.max(10);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        if current.is_empty() {
-            current.push_str(word);
-        } else if current.len() + 1 + word.len() <= max_chars {
-            current.push(' ');
-            current.push_str(word);
+    let mut result: Vec<Line<'static>> = Vec::new();
+    let parts: Vec<&str> = joke.split(". ").collect();
+    for (i, part) in parts.iter().enumerate() {
+        let sentence = if i + 1 < parts.len() {
+            format!("{}.", part)
         } else {
-            lines.push(Line::from(current));
-            current = word.to_string();
+            part.to_string()
+        };
+        let mut current = String::new();
+        for word in sentence.split_whitespace() {
+            if current.is_empty() {
+                current.push_str(word);
+            } else if current.len() + 1 + word.len() <= max_chars {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                result.push(Line::from(current));
+                current = word.to_string();
+            }
+        }
+        if !current.is_empty() {
+            result.push(Line::from(current));
         }
     }
-    if !current.is_empty() {
-        lines.push(Line::from(current));
-    }
-    lines
+    result
 }
 
 fn render_intro(f: &mut Frame, app: &App) {
@@ -52,7 +60,7 @@ fn render_intro(f: &mut Frame, app: &App) {
     // Sextant: each character is 4 terminal columns wide, 3 rows tall
     let max_chars = (area.width / 4) as usize;
     let joke = crate::app::JOKES[app.joke_index];
-    let joke_lines = word_wrap(joke, max_chars);
+    let joke_lines = joke_lines(joke, max_chars);
     let joke_height = (joke_lines.len() as u16 * 3).max(3);
 
     let chunks = Layout::default()
