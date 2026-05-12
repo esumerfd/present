@@ -1,5 +1,6 @@
 use crate::assets::{AssetKind, Topic};
 use crate::firework::Firework;
+use crate::state::PresentationState;
 use crossterm::event::KeyCode;
 use std::collections::HashSet;
 use std::time::Instant;
@@ -56,6 +57,7 @@ pub struct App {
     pub countdown_start: Option<Instant>,
     pub joke_index: usize,
     pub joke_timer: Instant,
+    pub assets_dir: String,
 }
 
 impl App {
@@ -64,7 +66,7 @@ impl App {
         for (i, t) in topics.iter().enumerate() {
             dbg(&format!("topic[{}] {} panels={}", i, t.name, t.panels.len()));
         }
-        Ok(Self {
+        let mut app = Self {
             screen: Screen::Intro,
             topics,
             current_topic: 0,
@@ -75,7 +77,37 @@ impl App {
             countdown_start: None,
             joke_index: 0,
             joke_timer: Instant::now(),
-        })
+            assets_dir: assets_dir.to_string(),
+        };
+        if let Ok(Some(state)) = crate::state::load_state(assets_dir) {
+            app.apply_state(state);
+        }
+        Ok(app)
+    }
+
+    fn collect_state(&self) -> PresentationState {
+        let panel_per_topic = self.topics.iter().map(|t| t.current_panel).collect();
+        let mut visited: Vec<usize> = self.visited.iter().copied().collect();
+        visited.sort();
+        PresentationState { current_topic: self.current_topic, panel_per_topic, visited }
+    }
+
+    fn apply_state(&mut self, state: PresentationState) {
+        self.current_topic = state.current_topic.min(self.topics.len().saturating_sub(1));
+        for (i, &panel) in state.panel_per_topic.iter().enumerate() {
+            if let Some(topic) = self.topics.get_mut(i) {
+                topic.current_panel = panel.min(topic.panels.len().saturating_sub(1));
+            }
+        }
+        self.visited = state.visited.into_iter().collect();
+        self.screen = Screen::Topic;
+    }
+
+    fn persist_state(&self) {
+        if self.assets_dir.is_empty() {
+            return;
+        }
+        let _ = crate::state::save_state(&self.assets_dir, &self.collect_state());
     }
 
     pub fn handle_key(&mut self, key: KeyCode) -> bool {
@@ -141,6 +173,7 @@ impl App {
             self.visited.insert(idx);
             self.firework = Some(Firework::new());
         }
+        self.persist_state();
     }
 
     fn next_topic(&mut self) {
@@ -165,6 +198,7 @@ impl App {
         dbg(&format!("next_panel: topic={} panel={} count={} next={}", self.current_topic, current_panel, panel_count, next));
         if next < panel_count {
             self.topics[self.current_topic].current_panel = next;
+            self.persist_state();
         } else {
             let next_topic = self.current_topic + 1;
             if next_topic < self.topics.len() {
@@ -180,6 +214,7 @@ impl App {
         };
         if current_panel > 0 {
             self.topics[self.current_topic].current_panel = current_panel - 1;
+            self.persist_state();
         } else if self.current_topic > 0 {
             let prev_idx = self.current_topic - 1;
             let last_panel = self.topics[prev_idx].panels.len().saturating_sub(1);
@@ -275,7 +310,53 @@ mod tests {
             countdown_start: None,
             joke_index: 0,
             joke_timer: Instant::now(),
+            assets_dir: String::new(),
         }
+    }
+
+    #[test]
+    fn collects_state_from_current_position() {
+        let mut app = make_app(&[3, 2]);
+        app.current_topic = 1;
+        app.topics[0].current_panel = 2;
+        app.topics[1].current_panel = 1;
+        app.visited = HashSet::from([0, 1]);
+
+        let state = app.collect_state();
+        assert_eq!(state.current_topic, 1);
+        assert_eq!(state.panel_per_topic, vec![2, 1]);
+        let mut visited = state.visited.clone();
+        visited.sort();
+        assert_eq!(visited, vec![0, 1]);
+    }
+
+    #[test]
+    fn applies_state_to_restore_position() {
+        let mut app = make_app(&[3, 2]);
+        let state = PresentationState {
+            current_topic: 1,
+            panel_per_topic: vec![2, 1],
+            visited: vec![0, 1],
+        };
+        app.apply_state(state);
+        assert_eq!(app.current_topic, 1);
+        assert_eq!(app.topics[0].current_panel, 2);
+        assert_eq!(app.topics[1].current_panel, 1);
+        assert!(app.visited.contains(&0));
+        assert!(app.visited.contains(&1));
+        assert_eq!(app.screen, Screen::Topic);
+    }
+
+    #[test]
+    fn apply_state_clamps_panel_to_topic_length() {
+        let mut app = make_app(&[2]);
+        let state = PresentationState {
+            current_topic: 0,
+            panel_per_topic: vec![99],
+            visited: vec![0],
+        };
+        app.apply_state(state);
+        assert_eq!(app.topics[0].current_panel, 1, "clamped to last panel index");
     }
 
     #[test]

@@ -4,6 +4,7 @@ mod claude;
 mod firework;
 mod markdown;
 mod mermaid;
+mod state;
 mod ui;
 
 use anyhow::Result;

@@ -1109,6 +1109,8 @@ dependencies = [
  "mmdflux",
  "pulldown-cmark",
  "ratatui",
+ "serde",
+ "serde_json",
  "tui-big-text",
 ]
 
