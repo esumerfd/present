@@ -134,6 +134,33 @@ fn load_panels(topic_path: &Path) -> Result<Vec<Panel>> {
     Ok(panels)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_heading_with_hash_heading() {
+        let content = "# Build Hello World\n\n/workflow:plan";
+        assert_eq!(strip_heading(content), "/workflow:plan");
+    }
+
+    #[test]
+    fn strip_heading_with_plain_text_title() {
+        let content = "Build Hello World\n\n/workflow:plan";
+        assert_eq!(strip_heading(content), "/workflow:plan");
+    }
+
+    #[test]
+    fn extract_label_from_hash_heading() {
+        assert_eq!(extract_label("# Build Hello World\n\n/workflow:plan"), "Build Hello World");
+    }
+
+    #[test]
+    fn extract_label_from_plain_text() {
+        assert_eq!(extract_label("Build Hello World\n\n/workflow:plan"), "Build Hello World");
+    }
+}
+
 fn dir_name_to_label(name: &str) -> String {
     let stripped = name.trim_start_matches(|c: char| c.is_ascii_digit() || c == '-' || c == '_');
     stripped.replace(['-', '_'], " ")
@@ -152,7 +179,7 @@ fn extract_label(content: &str) -> String {
 fn strip_heading(content: &str) -> String {
     let mut lines = content.lines();
     for line in lines.by_ref() {
-        if line.trim_start().starts_with('#') {
+        if !line.trim().is_empty() {
             break;
         }
     }
