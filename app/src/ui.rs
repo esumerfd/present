@@ -15,10 +15,6 @@ pub fn render(f: &mut Frame, app: &App) {
     match app.screen {
         Screen::Intro => render_intro(f, app),
         Screen::Topic => render_topic(f, app),
-        Screen::PromptList => {
-            render_topic(f, app);
-            render_prompt_list(f, app);
-        }
         Screen::Confirm => {
             render_topic(f, app);
             render_confirm(f, app);
@@ -137,7 +133,7 @@ fn render_topic(f: &mut Frame, app: &App) {
     render_header(f, app, chunks[0]);
 
     if let Some(panel) = topic.current_panel() {
-        render_panel(f, panel, chunks[1]);
+        render_panel(f, panel, chunks[1], app.selected_line);
     }
 
     render_status(f, app, has_prompt, chunks[2]);
@@ -147,7 +143,7 @@ fn render_topic(f: &mut Frame, app: &App) {
     }
 }
 
-fn render_panel(f: &mut Frame, panel: &Panel, area: Rect) {
+fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) {
     let has_text    = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Text { .. }));
     let has_diagram = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Diagram { .. }));
     let has_prompt  = panel.has_prompt();
@@ -167,7 +163,7 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect) {
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(area);
             render_text_asset(f, panel, rows[0]);
-            render_prompt_asset(f, panel, rows[1]);
+            render_prompt_asset(f, panel, rows[1], selected_line);
         }
         (false, true, true) => {
             let rows = Layout::default()
@@ -175,7 +171,7 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect) {
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(area);
             render_diagram_asset(f, panel, rows[0]);
-            render_prompt_asset(f, panel, rows[1]);
+            render_prompt_asset(f, panel, rows[1], selected_line);
         }
         (_, true, false) => render_diagram_asset(f, panel, area),
         (true, false, false) => render_text_asset(f, panel, area),
@@ -184,7 +180,7 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect) {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(area);
-            render_prompt_asset(f, panel, rows[1]);
+            render_prompt_asset(f, panel, rows[1], selected_line);
         }
         _ => {
             f.render_widget(
@@ -234,14 +230,21 @@ fn render_diagram_asset(f: &mut Frame, panel: &Panel, area: Rect) {
     );
 }
 
-fn render_prompt_asset(f: &mut Frame, panel: &Panel, area: Rect) {
+fn render_prompt_asset(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) {
     let Some(asset) = panel.prompt() else { return };
     let AssetKind::Prompt { label, content, sent } = &asset.kind else { return };
     let title = if *sent { format!(" {} ✓ ", label) } else { format!(" {} ", label) };
-    let lines: Vec<Line> = content
-        .lines()
-        .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(Color::Yellow))))
-        .collect();
+    let non_blank: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<Line> = non_blank.iter().enumerate().map(|(i, l)| {
+        if i == selected_line {
+            Line::from(vec![
+                Span::styled("> ", Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled(l.to_string(), Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ])
+        } else {
+            Line::from(Span::styled(format!("  {l}"), Style::default().fg(Color::Yellow)))
+        }
+    }).collect();
     f.render_widget(
         Paragraph::new(lines)
             .block(
@@ -294,7 +297,7 @@ fn render_status(f: &mut Frame, app: &App, has_prompt: bool, area: Rect) {
     let msg = if let Some(status) = &app.status_message {
         status.clone()
     } else if has_prompt {
-        "SPACE/l: next panel  h: prev  →: next topic  ←: prev topic  s: pick line  S: send all  q: quit".to_string()
+        "SPACE/l: next panel  h: prev  →: next topic  ←: prev topic  j/k: select line  s: send line  S: send all  q: quit".to_string()
     } else {
         "SPACE/l: next panel  h: prev  →: next topic  ←: prev topic  q: quit".to_string()
     };
@@ -303,49 +306,6 @@ fn render_status(f: &mut Frame, app: &App, has_prompt: bool, area: Rect) {
         Paragraph::new(Span::styled(format!(" {msg}"), Style::default().fg(Color::DarkGray))),
         area,
     );
-}
-
-fn render_prompt_list(f: &mut Frame, app: &App) {
-    let area = f.area();
-    let list_height = (app.prompt_lines.len() as u16 + 4).max(6).min(area.height.saturating_sub(4));
-    let popup = centered_rect(70, list_height, area);
-    f.render_widget(Clear, popup);
-    f.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-            .title(format!(" {} ", app.pending_label)),
-        popup,
-    );
-
-    let inner = Rect {
-        x: popup.x + 1,
-        y: popup.y + 1,
-        width: popup.width.saturating_sub(2),
-        height: popup.height.saturating_sub(2),
-    };
-
-    let mut lines: Vec<Line> = app.prompt_lines.iter().enumerate().map(|(i, line)| {
-        if i == app.selected_line {
-            Line::from(Span::styled(
-                format!(" > {line}"),
-                Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
-            ))
-        } else {
-            Line::from(Span::styled(
-                format!("   {line}"),
-                Style::default().fg(Color::Yellow),
-            ))
-        }
-    }).collect();
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "j/k: navigate   Enter: send line   S: send all   Esc: cancel",
-        Style::default().fg(Color::DarkGray),
-    )));
-
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn render_confirm(f: &mut Frame, app: &App) {
