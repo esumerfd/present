@@ -42,6 +42,7 @@ pub const JOKES: &[&str] = &[
 pub enum Screen {
     Intro,
     Topic,
+    PromptList,
     Confirm,
     Countdown,
 }
@@ -54,6 +55,9 @@ pub struct App {
     pub firework: Option<Firework>,
     pub status_message: Option<String>,
     pub pending_label: String,
+    pub pending_content: String,
+    pub prompt_lines: Vec<String>,
+    pub selected_line: usize,
     pub countdown_start: Option<Instant>,
     pub joke_index: usize,
     pub joke_timer: Instant,
@@ -74,6 +78,9 @@ impl App {
             firework: None,
             status_message: None,
             pending_label: String::new(),
+            pending_content: String::new(),
+            prompt_lines: vec![],
+            selected_line: 0,
             countdown_start: None,
             joke_index: 0,
             joke_timer: Instant::now(),
@@ -130,7 +137,24 @@ impl App {
                     KeyCode::Char('h') | KeyCode::Up => self.prev_panel(),
                     KeyCode::Right => self.next_topic(),
                     KeyCode::Left => self.prev_topic(),
-                    KeyCode::Char('s') => self.stage_send(),
+                    KeyCode::Char('s') => self.open_prompt_list(),
+                    KeyCode::Char('S') => self.stage_send_all(),
+                    _ => {}
+                }
+            }
+            Screen::PromptList => {
+                match key {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if !self.prompt_lines.is_empty() {
+                            self.selected_line = (self.selected_line + 1).min(self.prompt_lines.len() - 1);
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.selected_line = self.selected_line.saturating_sub(1);
+                    }
+                    KeyCode::Enter | KeyCode::Char('l') => self.select_prompt_line(),
+                    KeyCode::Char('S') => self.stage_send_all(),
+                    KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Topic,
                     _ => {}
                 }
             }
@@ -223,15 +247,37 @@ impl App {
         }
     }
 
-    fn stage_send(&mut self) {
+    fn open_prompt_list(&mut self) {
         let Some(topic) = self.topics.get(self.current_topic) else { return };
         let Some(panel) = topic.current_panel() else { return };
         let Some(asset) = panel.prompt() else {
             self.status_message = Some("No prompt on this panel".to_string());
             return;
         };
-        let AssetKind::Prompt { label, .. } = &asset.kind else { return };
+        let AssetKind::Prompt { label, content, .. } = &asset.kind else { return };
         self.pending_label = label.clone();
+        self.prompt_lines = content.lines().filter(|l| !l.trim().is_empty()).map(|l| l.to_string()).collect();
+        self.selected_line = 0;
+        self.screen = Screen::PromptList;
+    }
+
+    fn select_prompt_line(&mut self) {
+        if let Some(line) = self.prompt_lines.get(self.selected_line) {
+            self.pending_content = line.clone();
+            self.screen = Screen::Confirm;
+        }
+    }
+
+    fn stage_send_all(&mut self) {
+        let Some(topic) = self.topics.get(self.current_topic) else { return };
+        let Some(panel) = topic.current_panel() else { return };
+        let Some(asset) = panel.prompt() else {
+            self.status_message = Some("No prompt on this panel".to_string());
+            return;
+        };
+        let AssetKind::Prompt { label, content, .. } = &asset.kind else { return };
+        self.pending_label = label.clone();
+        self.pending_content = content.clone();
         self.screen = Screen::Confirm;
     }
 
@@ -239,10 +285,7 @@ impl App {
         let Some(topic) = self.topics.get(self.current_topic) else { return };
         let panel_idx = topic.current_panel;
         let topic_name = topic.name.clone();
-        let Some(panel) = topic.current_panel() else { return };
-        let Some(asset) = panel.prompt() else { return };
-        let AssetKind::Prompt { content, .. } = &asset.kind else { return };
-        let content = content.clone();
+        let content = self.pending_content.clone();
 
         match crate::claude::send(&content, &topic_name, panel_idx) {
             Ok(msg) => {
@@ -289,8 +332,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assets::Panel;
+    use crate::assets::{Asset, AssetKind, Panel};
     use std::collections::HashSet;
+    use std::path::PathBuf;
 
     fn make_app(panel_counts: &[usize]) -> App {
         let topics = panel_counts.iter().enumerate().map(|(i, &n)| Topic {
@@ -307,6 +351,43 @@ mod tests {
             firework: None,
             status_message: None,
             pending_label: String::new(),
+            pending_content: String::new(),
+            prompt_lines: vec![],
+            selected_line: 0,
+            countdown_start: None,
+            joke_index: 0,
+            joke_timer: Instant::now(),
+            assets_dir: String::new(),
+        }
+    }
+
+    fn make_app_with_prompt(content: &str) -> App {
+        let prompt = Asset {
+            path: PathBuf::from("prompt.md"),
+            kind: AssetKind::Prompt {
+                label: "Test Prompt".into(),
+                content: content.to_string(),
+                sent: false,
+            },
+        };
+        let panel = Panel { assets: vec![prompt] };
+        let topic = Topic {
+            name: "topic-0".into(),
+            label: "Topic 0".into(),
+            panels: vec![panel],
+            current_panel: 0,
+        };
+        App {
+            screen: Screen::Topic,
+            topics: vec![topic],
+            current_topic: 0,
+            visited: HashSet::from([0]),
+            firework: None,
+            status_message: None,
+            pending_label: String::new(),
+            pending_content: String::new(),
+            prompt_lines: vec![],
+            selected_line: 0,
             countdown_start: None,
             joke_index: 0,
             joke_timer: Instant::now(),
@@ -382,5 +463,95 @@ mod tests {
         app.next_panel();
         assert_eq!(app.current_topic, 1, "should advance to topic 1");
         assert_eq!(app.topics[1].current_panel, 0, "new topic starts at panel 0");
+    }
+
+    #[test]
+    fn s_opens_prompt_list_screen() {
+        let mut app = make_app_with_prompt("line1\nline2\nline3");
+        app.handle_key(KeyCode::Char('s'));
+        assert_eq!(app.screen, Screen::PromptList);
+    }
+
+    #[test]
+    fn s_populates_prompt_lines_filtering_blanks() {
+        let mut app = make_app_with_prompt("line1\n\nline2\nline3");
+        app.handle_key(KeyCode::Char('s'));
+        assert_eq!(app.prompt_lines, vec!["line1", "line2", "line3"]);
+    }
+
+    #[test]
+    fn s_resets_selected_line_to_zero() {
+        let mut app = make_app_with_prompt("line1\nline2");
+        app.selected_line = 5;
+        app.handle_key(KeyCode::Char('s'));
+        assert_eq!(app.selected_line, 0);
+    }
+
+    #[test]
+    fn j_advances_selection_in_prompt_list() {
+        let mut app = make_app_with_prompt("line1\nline2\nline3");
+        app.screen = Screen::PromptList;
+        app.prompt_lines = vec!["line1".into(), "line2".into(), "line3".into()];
+        app.selected_line = 0;
+        app.handle_key(KeyCode::Char('j'));
+        assert_eq!(app.selected_line, 1);
+    }
+
+    #[test]
+    fn k_retreats_selection_in_prompt_list() {
+        let mut app = make_app_with_prompt("line1\nline2\nline3");
+        app.screen = Screen::PromptList;
+        app.prompt_lines = vec!["line1".into(), "line2".into(), "line3".into()];
+        app.selected_line = 2;
+        app.handle_key(KeyCode::Char('k'));
+        assert_eq!(app.selected_line, 1);
+    }
+
+    #[test]
+    fn j_clamps_at_last_line() {
+        let mut app = make_app_with_prompt("line1\nline2");
+        app.screen = Screen::PromptList;
+        app.prompt_lines = vec!["line1".into(), "line2".into()];
+        app.selected_line = 1;
+        app.handle_key(KeyCode::Char('j'));
+        assert_eq!(app.selected_line, 1);
+    }
+
+    #[test]
+    fn k_clamps_at_first_line() {
+        let mut app = make_app_with_prompt("line1\nline2");
+        app.screen = Screen::PromptList;
+        app.prompt_lines = vec!["line1".into(), "line2".into()];
+        app.selected_line = 0;
+        app.handle_key(KeyCode::Char('k'));
+        assert_eq!(app.selected_line, 0);
+    }
+
+    #[test]
+    fn enter_in_prompt_list_sets_pending_content_and_goes_to_confirm() {
+        let mut app = make_app_with_prompt("line1\nline2\nline3");
+        app.screen = Screen::PromptList;
+        app.prompt_lines = vec!["line1".into(), "line2".into(), "line3".into()];
+        app.selected_line = 1;
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.screen, Screen::Confirm);
+        assert_eq!(app.pending_content, "line2");
+    }
+
+    #[test]
+    fn esc_in_prompt_list_returns_to_topic() {
+        let mut app = make_app_with_prompt("line1\nline2");
+        app.screen = Screen::PromptList;
+        app.prompt_lines = vec!["line1".into(), "line2".into()];
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.screen, Screen::Topic);
+    }
+
+    #[test]
+    fn shift_s_sends_all_lines_directly_to_confirm() {
+        let mut app = make_app_with_prompt("line1\nline2\nline3");
+        app.handle_key(KeyCode::Char('S'));
+        assert_eq!(app.screen, Screen::Confirm);
+        assert_eq!(app.pending_content, "line1\nline2\nline3");
     }
 }

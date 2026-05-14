@@ -15,6 +15,10 @@ pub fn render(f: &mut Frame, app: &App) {
     match app.screen {
         Screen::Intro => render_intro(f, app),
         Screen::Topic => render_topic(f, app),
+        Screen::PromptList => {
+            render_topic(f, app);
+            render_prompt_list(f, app);
+        }
         Screen::Confirm => {
             render_topic(f, app);
             render_confirm(f, app);
@@ -290,7 +294,7 @@ fn render_status(f: &mut Frame, app: &App, has_prompt: bool, area: Rect) {
     let msg = if let Some(status) = &app.status_message {
         status.clone()
     } else if has_prompt {
-        "SPACE/l: next panel  h: prev  →: next topic  ←: prev topic  s: send prompt  q: quit".to_string()
+        "SPACE/l: next panel  h: prev  →: next topic  ←: prev topic  s: pick line  S: send all  q: quit".to_string()
     } else {
         "SPACE/l: next panel  h: prev  →: next topic  ←: prev topic  q: quit".to_string()
     };
@@ -299,6 +303,49 @@ fn render_status(f: &mut Frame, app: &App, has_prompt: bool, area: Rect) {
         Paragraph::new(Span::styled(format!(" {msg}"), Style::default().fg(Color::DarkGray))),
         area,
     );
+}
+
+fn render_prompt_list(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let list_height = (app.prompt_lines.len() as u16 + 4).max(6).min(area.height.saturating_sub(4));
+    let popup = centered_rect(70, list_height, area);
+    f.render_widget(Clear, popup);
+    f.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            .title(format!(" {} ", app.pending_label)),
+        popup,
+    );
+
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+
+    let mut lines: Vec<Line> = app.prompt_lines.iter().enumerate().map(|(i, line)| {
+        if i == app.selected_line {
+            Line::from(Span::styled(
+                format!(" > {line}"),
+                Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ))
+        } else {
+            Line::from(Span::styled(
+                format!("   {line}"),
+                Style::default().fg(Color::Yellow),
+            ))
+        }
+    }).collect();
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "j/k: navigate   Enter: send line   S: send all   Esc: cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn render_confirm(f: &mut Frame, app: &App) {
