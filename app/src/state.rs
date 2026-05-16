@@ -38,6 +38,19 @@ pub fn load_state(assets_dir: &str) -> Result<Option<PresentationState>> {
     load_state_from(STATE_FILE, assets_dir)
 }
 
+pub fn clear_state(assets_dir: &str) -> Result<()> {
+    clear_state_from(STATE_FILE, assets_dir)
+}
+
+fn clear_state_from(file: &str, assets_dir: &str) -> Result<()> {
+    let key = canonical_key(assets_dir);
+    let mut all = load_all(file)?;
+    all.remove(&key);
+    let json = serde_json::to_string_pretty(&all)?;
+    fs::write(file, json)?;
+    Ok(())
+}
+
 fn save_state_to(file: &str, assets_dir: &str, state: &PresentationState) -> Result<()> {
     let key = canonical_key(assets_dir);
     let mut all = load_all(file)?;
@@ -89,6 +102,40 @@ mod tests {
         assert_eq!(loaded.current_topic, 2);
         assert_eq!(loaded.panel_per_topic, vec![0, 1, 3]);
         assert_eq!(loaded.visited, vec![0, 1, 2]);
+        let _ = fs::remove_file(f);
+    }
+
+    #[test]
+    fn clear_removes_state_for_key() {
+        let f = "/tmp/present-state-test-clear.json";
+        let _ = fs::remove_file(f);
+        let state = PresentationState { current_topic: 1, panel_per_topic: vec![2], visited: vec![0, 1] };
+        save_state_to(f, "/tmp", &state).unwrap();
+        clear_state_from(f, "/tmp").unwrap();
+        let result = load_state_from(f, "/tmp").unwrap();
+        assert!(result.is_none());
+        let _ = fs::remove_file(f);
+    }
+
+    #[test]
+    fn clear_preserves_other_keys() {
+        let f = "/tmp/present-state-test-clear-preserve.json";
+        let _ = fs::remove_file(f);
+        let s1 = PresentationState { current_topic: 0, panel_per_topic: vec![1], visited: vec![0] };
+        let s2 = PresentationState { current_topic: 2, panel_per_topic: vec![3], visited: vec![0, 1, 2] };
+        save_state_to(f, "/tmp", &s1).unwrap();
+        save_state_to(f, "/var", &s2).unwrap();
+        clear_state_from(f, "/tmp").unwrap();
+        assert!(load_state_from(f, "/tmp").unwrap().is_none());
+        assert!(load_state_from(f, "/var").unwrap().is_some());
+        let _ = fs::remove_file(f);
+    }
+
+    #[test]
+    fn clear_is_safe_when_key_absent() {
+        let f = "/tmp/present-state-test-clear-absent.json";
+        let _ = fs::remove_file(f);
+        clear_state_from(f, "/tmp").unwrap();
         let _ = fs::remove_file(f);
     }
 

@@ -1,19 +1,21 @@
 .PHONY: build run release check clean install
 
+CARGO_TARGET_DIR := gen/build
+
 build:
-	cargo build --manifest-path app/Cargo.toml
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo build --manifest-path app/Cargo.toml
 
 run: build
-	cargo run --manifest-path app/Cargo.toml
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo run --manifest-path app/Cargo.toml
 
 release:
-	cargo build --release --manifest-path app/Cargo.toml
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo build --release --manifest-path app/Cargo.toml
 
 check:
-	cargo clippy --manifest-path app/Cargo.toml -- -D warnings
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo clippy --manifest-path app/Cargo.toml -- -D warnings
 
 clean:
-	cargo clean --manifest-path app/Cargo.toml
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo clean --manifest-path app/Cargo.toml
 
 install: release
-	cargo install --path app
+	cargo install --path app --target-dir $(CARGO_TARGET_DIR)

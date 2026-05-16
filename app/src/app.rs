@@ -130,6 +130,7 @@ impl App {
                 self.status_message = None;
                 match key {
                     KeyCode::Char('q') => return true,
+                    KeyCode::Char('C') => self.reset(),
                     KeyCode::Char(' ') | KeyCode::Char('l') | KeyCode::Down => self.next_panel(),
                     KeyCode::Char('h') | KeyCode::Up => self.prev_panel(),
                     KeyCode::Right => self.next_topic(),
@@ -302,6 +303,18 @@ impl App {
             }
             Err(e) => self.status_message = Some(format!("Error: {e}")),
         }
+    }
+
+    fn reset(&mut self) {
+        self.current_topic = 0;
+        for topic in &mut self.topics {
+            topic.current_panel = 0;
+        }
+        self.visited = HashSet::new();
+        self.selected_line = 0;
+        self.screen = Screen::Topic;
+        self.status_message = Some("State cleared — starting from the beginning".to_string());
+        let _ = crate::state::clear_state(&self.assets_dir);
     }
 
     pub fn tick(&mut self) {
@@ -527,5 +540,25 @@ mod tests {
         app.handle_key(KeyCode::Char('S'));
         assert_eq!(app.screen, Screen::Confirm);
         assert_eq!(app.pending_content, "line1\nline2\nline3");
+    }
+
+    #[test]
+    fn capital_c_resets_to_topic_zero_panel_zero() {
+        let mut app = make_app(&[3, 2]);
+        app.current_topic = 1;
+        app.topics[0].current_panel = 2;
+        app.topics[1].current_panel = 1;
+        app.selected_line = 1;
+        app.visited = HashSet::from([0, 1]);
+
+        app.handle_key(KeyCode::Char('C'));
+
+        assert_eq!(app.current_topic, 0);
+        assert_eq!(app.topics[0].current_panel, 0);
+        assert_eq!(app.topics[1].current_panel, 0);
+        assert_eq!(app.selected_line, 0);
+        assert!(app.visited.is_empty());
+        assert_eq!(app.screen, Screen::Topic);
+        assert!(app.status_message.is_some());
     }
 }

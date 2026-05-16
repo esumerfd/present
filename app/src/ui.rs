@@ -10,6 +10,28 @@ use ratatui::{
 };
 use tui_big_text::{BigText, PixelSize};
 
+const CLOUD_COLORS: &[Color] = &[
+    Color::Cyan,
+    Color::Yellow,
+    Color::Green,
+    Color::Magenta,
+    Color::White,
+    Color::Red,
+];
+
+fn word_hash(word: &str) -> u64 {
+    word.bytes().fold(0xcbf29ce484222325u64, |acc, b| {
+        acc.wrapping_mul(0x100000001b3).wrapping_add(b as u64)
+    })
+}
+
+fn cloud_seed(words: &[String]) -> u64 {
+    words.iter().fold(0x517cc1b727220a95u64, |acc, w| {
+        acc.wrapping_add(word_hash(w)).rotate_left(7)
+    })
+}
+
+
 
 pub fn render(f: &mut Frame, app: &App) {
     match app.screen {
@@ -144,12 +166,14 @@ fn render_topic(f: &mut Frame, app: &App) {
 }
 
 fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) {
-    let has_text    = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Text { .. }));
-    let has_diagram = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Diagram { .. }));
-    let has_prompt  = panel.has_prompt();
+    let has_text       = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Text { .. }));
+    let has_diagram    = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Diagram { .. }));
+    let has_prompt     = panel.has_prompt();
+    let has_word_cloud = panel.has_word_cloud();
 
-    match (has_text, has_diagram, has_prompt) {
-        (true, true, _) => {
+    match (has_text, has_diagram, has_prompt, has_word_cloud) {
+        // text + diagram takes priority over word cloud when all three present
+        (true, true, _, _) => {
             let sides = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -157,7 +181,7 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) 
             render_text_asset(f, panel, sides[0]);
             render_diagram_asset(f, panel, sides[1]);
         }
-        (true, false, true) => {
+        (true, false, true, _) => {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
@@ -165,7 +189,7 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) 
             render_text_asset(f, panel, rows[0]);
             render_prompt_asset(f, panel, rows[1], selected_line);
         }
-        (false, true, true) => {
+        (false, true, true, _) => {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
@@ -173,9 +197,35 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) 
             render_diagram_asset(f, panel, rows[0]);
             render_prompt_asset(f, panel, rows[1], selected_line);
         }
-        (_, true, false) => render_diagram_asset(f, panel, area),
-        (true, false, false) => render_text_asset(f, panel, area),
-        (false, false, true) => {
+        (_, true, false, false) => render_diagram_asset(f, panel, area),
+        (true, false, false, false) => render_text_asset(f, panel, area),
+        // word cloud cases (before the wildcard prompt-only arm)
+        (false, false, false, true) => render_word_cloud_asset(f, panel, area),
+        (false, false, true, true) => {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+                .split(area);
+            render_word_cloud_asset(f, panel, rows[0]);
+            render_prompt_asset(f, panel, rows[1], selected_line);
+        }
+        (true, false, false, true) => {
+            let sides = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(area);
+            render_text_asset(f, panel, sides[0]);
+            render_word_cloud_asset(f, panel, sides[1]);
+        }
+        (false, true, false, true) => {
+            let sides = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(area);
+            render_diagram_asset(f, panel, sides[0]);
+            render_word_cloud_asset(f, panel, sides[1]);
+        }
+        (false, false, true, false) => {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
@@ -201,6 +251,58 @@ fn render_text_asset(f: &mut Frame, panel: &Panel, area: Rect) {
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn render_word_cloud_asset(f: &mut Frame, panel: &Panel, area: Rect) {
+    let Some(asset) = panel.word_cloud() else { return };
+    let AssetKind::WordCloud { title, words } = &asset.kind else { return };
+
+    f.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(format!(" {} ", title)),
+        area,
+    );
+
+    if words.is_empty() {
+        return;
+    }
+
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let buf = f.buffer_mut();
+    let seed = cloud_seed(words);
+
+    for (i, word) in words.iter().enumerate() {
+        let wh = word_hash(word);
+        let raw_x = (seed ^ wh ^ (i as u64).wrapping_mul(2654435761)) % inner.width as u64;
+        let raw_y = (seed ^ wh.rotate_left(32) ^ (i as u64).wrapping_mul(6364136223846793005)) % inner.height as u64;
+        let x = inner.x + (raw_x as u16).min(inner.width.saturating_sub(word.len() as u16));
+        let y = inner.y + raw_y as u16;
+
+        let color = CLOUD_COLORS[(wh as usize) % CLOUD_COLORS.len()];
+
+        for (col, ch) in word.chars().enumerate() {
+            let cx = x + col as u16;
+            if cx < inner.x + inner.width {
+                if let Some(cell) = buf.cell_mut((cx, y)) {
+                    cell.set_char(ch);
+                    cell.set_fg(color);
+                    cell.set_skip(false);
+                }
+            }
+        }
+    }
 }
 
 fn render_diagram_asset(f: &mut Frame, panel: &Panel, area: Rect) {
@@ -297,9 +399,9 @@ fn render_status(f: &mut Frame, app: &App, has_prompt: bool, area: Rect) {
     let msg = if let Some(status) = &app.status_message {
         status.clone()
     } else if has_prompt {
-        "SPACE/l: next panel  h: prev  →: next topic  ←: prev topic  j/k: select line  s: send line  S: send all  q: quit".to_string()
+        "SPACE/l: next panel  h: prev  →: next topic  ←: prev topic  j/k: select line  s: send line  S: send all  C: reset  q: quit".to_string()
     } else {
-        "SPACE/l: next panel  h: prev  →: next topic  ←: prev topic  q: quit".to_string()
+        "SPACE/l: next panel  h: prev  →: next topic  ←: prev topic  C: reset  q: quit".to_string()
     };
 
     f.render_widget(
@@ -432,4 +534,37 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     Rect { x, y, width: width.min(area.width), height: height.min(area.height) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_hash_is_deterministic() {
+        assert_eq!(word_hash("rust"), word_hash("rust"));
+    }
+
+    #[test]
+    fn word_hash_differs_for_different_words() {
+        assert_ne!(word_hash("rust"), word_hash("python"));
+    }
+
+    #[test]
+    fn cloud_seed_is_deterministic() {
+        let words = vec!["ownership".to_string(), "borrowing".to_string()];
+        assert_eq!(cloud_seed(&words), cloud_seed(&words));
+    }
+
+    #[test]
+    fn cloud_seed_differs_for_different_word_lists() {
+        let a = vec!["rust".to_string()];
+        let b = vec!["python".to_string()];
+        assert_ne!(cloud_seed(&a), cloud_seed(&b));
+    }
+
+    #[test]
+    fn cloud_seed_empty_list_does_not_panic() {
+        let _ = cloud_seed(&[]);
+    }
 }

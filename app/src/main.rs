@@ -19,7 +19,7 @@ use std::{io, time::Duration};
 
 enum Args {
     Help,
-    Run { assets_dir: String },
+    Run { assets_dir: String, reset: bool },
 }
 
 fn parse_args(args: Vec<String>) -> Args {
@@ -31,7 +31,8 @@ fn parse_args(args: Vec<String>) -> Args {
         .find(|w| w[0] == "--assets-dir")
         .map(|w| w[1].clone())
         .unwrap_or_else(|| "assets".to_string());
-    Args::Run { assets_dir }
+    let reset = args.iter().any(|a| a == "--reset");
+    Args::Run { assets_dir, reset }
 }
 
 fn help_text() -> &'static str {
@@ -39,6 +40,7 @@ fn help_text() -> &'static str {
 
 Options:
   --assets-dir <PATH>  Path to assets directory [default: assets]
+  --reset              Clear saved position and start from the beginning
   -h, --help           Print help
 "
 }
@@ -49,11 +51,14 @@ fn main() -> Result<()> {
             print!("{}", help_text());
             Ok(())
         }
-        Args::Run { assets_dir } => run(&assets_dir),
+        Args::Run { assets_dir, reset } => run(&assets_dir, reset),
     }
 }
 
-fn run(assets_dir: &str) -> Result<()> {
+fn run(assets_dir: &str, reset: bool) -> Result<()> {
+    if reset {
+        let _ = crate::state::clear_state(assets_dir);
+    }
     let mut app = App::new(assets_dir)?;
 
     enable_raw_mode()?;
@@ -115,7 +120,7 @@ mod tests {
     #[test]
     fn assets_dir_arg() {
         let args = vec!["--assets-dir".to_string(), "/path/to/assets".to_string()];
-        let Args::Run { assets_dir } = parse_args(args) else {
+        let Args::Run { assets_dir, .. } = parse_args(args) else {
             panic!("expected Run variant");
         };
         assert_eq!(assets_dir, "/path/to/assets");
@@ -123,9 +128,35 @@ mod tests {
 
     #[test]
     fn default_assets_dir() {
-        let Args::Run { assets_dir } = parse_args(vec![]) else {
+        let Args::Run { assets_dir, .. } = parse_args(vec![]) else {
             panic!("expected Run variant");
         };
         assert_eq!(assets_dir, "assets");
+    }
+
+    #[test]
+    fn reset_flag_sets_reset_true() {
+        let Args::Run { reset, .. } = parse_args(vec!["--reset".to_string()]) else {
+            panic!("expected Run variant");
+        };
+        assert!(reset);
+    }
+
+    #[test]
+    fn reset_flag_absent_by_default() {
+        let Args::Run { reset, .. } = parse_args(vec![]) else {
+            panic!("expected Run variant");
+        };
+        assert!(!reset);
+    }
+
+    #[test]
+    fn reset_flag_combines_with_assets_dir() {
+        let args = vec!["--assets-dir".to_string(), "/tmp".to_string(), "--reset".to_string()];
+        let Args::Run { assets_dir, reset } = parse_args(args) else {
+            panic!("expected Run variant");
+        };
+        assert_eq!(assets_dir, "/tmp");
+        assert!(reset);
     }
 }

@@ -37,6 +37,14 @@ impl Panel {
     pub fn has_prompt(&self) -> bool {
         self.assets.iter().any(|a| matches!(a.kind, AssetKind::Prompt { .. }))
     }
+
+    pub fn word_cloud(&self) -> Option<&Asset> {
+        self.assets.iter().find(|a| matches!(a.kind, AssetKind::WordCloud { .. }))
+    }
+
+    pub fn has_word_cloud(&self) -> bool {
+        self.assets.iter().any(|a| matches!(a.kind, AssetKind::WordCloud { .. }))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +66,10 @@ pub enum AssetKind {
     },
     Text {
         content: String,
+    },
+    WordCloud {
+        title: String,
+        words: Vec<String>,
     },
 }
 
@@ -125,6 +137,13 @@ fn load_panels(topic_path: &Path) -> Result<Vec<Panel>> {
             let content = fs::read_to_string(&text_file)?;
             assets.push(Asset { path: text_file, kind: AssetKind::Text { content } });
         }
+        let word_cloud_file = dir.join("word-cloud.md");
+        if word_cloud_file.exists() {
+            let raw = fs::read_to_string(&word_cloud_file)?;
+            let title = extract_label(&raw);
+            let words = parse_word_cloud_words(&raw);
+            assets.push(Asset { path: word_cloud_file, kind: AssetKind::WordCloud { title, words } });
+        }
 
         if !assets.is_empty() {
             panels.push(Panel { assets });
@@ -159,6 +178,70 @@ mod tests {
     fn extract_label_from_plain_text() {
         assert_eq!(extract_label("Build Hello World\n\n/workflow:plan"), "Build Hello World");
     }
+
+    #[test]
+    fn parse_word_cloud_words_strips_headings_and_blanks() {
+        let content = "# My Cloud\n\nownership\nborrowing\n\nmemory safety\n";
+        assert_eq!(
+            parse_word_cloud_words(content),
+            vec!["ownership", "borrowing", "memory safety"]
+        );
+    }
+
+    #[test]
+    fn parse_word_cloud_words_no_heading() {
+        let content = "async\ntraits\nlifetimes\n";
+        assert_eq!(
+            parse_word_cloud_words(content),
+            vec!["async", "traits", "lifetimes"]
+        );
+    }
+
+    #[test]
+    fn parse_word_cloud_words_trims_whitespace() {
+        let content = "  ownership  \n  borrowing  \n";
+        assert_eq!(
+            parse_word_cloud_words(content),
+            vec!["ownership", "borrowing"]
+        );
+    }
+
+    #[test]
+    fn has_word_cloud_true_when_present() {
+        let cloud = Asset {
+            path: PathBuf::from("word-cloud.md"),
+            kind: AssetKind::WordCloud {
+                title: "Test".into(),
+                words: vec!["foo".into()],
+            },
+        };
+        let panel = Panel { assets: vec![cloud] };
+        assert!(panel.has_word_cloud());
+    }
+
+    #[test]
+    fn has_word_cloud_false_when_absent() {
+        let text = Asset {
+            path: PathBuf::from("text.md"),
+            kind: AssetKind::Text { content: "hello".into() },
+        };
+        let panel = Panel { assets: vec![text] };
+        assert!(!panel.has_word_cloud());
+    }
+
+    #[test]
+    fn word_cloud_returns_the_asset() {
+        let cloud = Asset {
+            path: PathBuf::from("word-cloud.md"),
+            kind: AssetKind::WordCloud {
+                title: "Cloud".into(),
+                words: vec!["rust".into()],
+            },
+        };
+        let panel = Panel { assets: vec![cloud] };
+        let asset = panel.word_cloud().expect("should find word cloud");
+        assert!(matches!(asset.kind, AssetKind::WordCloud { .. }));
+    }
 }
 
 fn dir_name_to_label(name: &str) -> String {
@@ -174,6 +257,14 @@ fn extract_label(content: &str) -> String {
         }
     }
     "untitled".to_string()
+}
+
+fn parse_word_cloud_words(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        .map(|l| l.trim().to_string())
+        .collect()
 }
 
 fn strip_heading(content: &str) -> String {
