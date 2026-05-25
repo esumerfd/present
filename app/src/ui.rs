@@ -402,6 +402,11 @@ fn render_diagram_asset(f: &mut Frame, panel: &Panel, area: Rect) {
             lines.push(Line::from(Span::styled(dl.to_string(), Style::default().fg(Color::DarkGray))));
         }
     }
+
+    let inner_w = area.width.saturating_sub(2);
+    let inner_h = area.height.saturating_sub(2);
+    let lines = crate::mermaid::center_lines(lines, inner_w, inner_h);
+
     f.render_widget(
         Paragraph::new(lines)
             .block(
@@ -409,8 +414,7 @@ fn render_diagram_asset(f: &mut Frame, panel: &Panel, area: Rect) {
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray))
                     .title(" Diagram "),
-            )
-            .wrap(Wrap { trim: false }),
+            ),
         area,
     );
 }
@@ -482,7 +486,7 @@ fn render_status(f: &mut Frame, app: &App, _has_prompt: bool, area: Rect) {
     let msg = if let Some(status) = &app.status_message {
         status.clone()
     } else {
-        "SPACE/l: next  ?: help".to_string()
+        "SPACE/l: next  c: copy path  R: reset  ?: help".to_string()
     };
 
     f.render_widget(
@@ -493,7 +497,7 @@ fn render_status(f: &mut Frame, app: &App, _has_prompt: bool, area: Rect) {
 
 fn render_help(f: &mut Frame) {
     let area = f.area();
-    let popup = centered_rect(50, 18, area);
+    let popup = centered_rect(50, 20, area);
     f.render_widget(Clear, popup);
     f.render_widget(
         Block::default()
@@ -526,7 +530,8 @@ fn render_help(f: &mut Frame) {
             Line::from(vec![key("s"),          sep(), desc("Send selected line")]),
             Line::from(vec![key("S"),          sep(), desc("Send all lines")]),
             Line::from(""),
-            Line::from(vec![key("C"),          sep(), desc("Reset to start")]),
+            Line::from(vec![key("c"),          sep(), desc("Copy text file path")]),
+            Line::from(vec![key("R"),          sep(), desc("Reset to start")]),
             Line::from(vec![key("q"),          sep(), desc("Quit")]),
             Line::from(""),
             Line::from(vec![key("?  Esc"),     sep(), desc("Close this help")]),

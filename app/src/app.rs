@@ -138,7 +138,8 @@ impl App {
                 match key {
                     KeyCode::Char('q') => return true,
                     KeyCode::Char('?') => self.screen = Screen::Help,
-                    KeyCode::Char('C') => self.reset(),
+                    KeyCode::Char('R') => self.reset(),
+                    KeyCode::Char('c') => self.copy_text_path_to_clipboard(),
                     KeyCode::Char(' ') | KeyCode::Char('l') | KeyCode::Down => self.next_panel(),
                     KeyCode::Char('h') | KeyCode::Up => self.prev_panel(),
                     KeyCode::Right => self.next_topic(),
@@ -316,6 +317,36 @@ impl App {
                 }
             }
             Err(e) => self.status_message = Some(format!("Error: {e}")),
+        }
+    }
+
+    fn copy_text_path_to_clipboard(&mut self) {
+        let path = self.topics.get(self.current_topic)
+            .and_then(|t| t.current_panel())
+            .and_then(|p| p.assets.iter().find(|a| matches!(a.kind, AssetKind::Text { .. })))
+            .map(|a| a.path.to_string_lossy().to_string());
+
+        match path {
+            Some(p) => {
+                use std::io::Write;
+                use std::process::{Command, Stdio};
+                let ok = Command::new("pbcopy")
+                    .stdin(Stdio::piped())
+                    .spawn()
+                    .and_then(|mut child| {
+                        child.stdin.take().unwrap().write_all(p.as_bytes())?;
+                        child.wait()
+                    })
+                    .is_ok();
+                self.status_message = Some(if ok {
+                    format!("Path copied: {p}")
+                } else {
+                    "Failed to copy path".to_string()
+                });
+            }
+            None => {
+                self.status_message = Some("No text file on this panel".to_string());
+            }
         }
     }
 
@@ -580,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn capital_c_resets_to_topic_zero_panel_zero() {
+    fn capital_r_resets_to_topic_zero_panel_zero() {
         let mut app = make_app(&[3, 2]);
         app.current_topic = 1;
         app.topics[0].current_panel = 2;
@@ -588,7 +619,7 @@ mod tests {
         app.selected_line = 1;
         app.visited = HashSet::from([0, 1]);
 
-        app.handle_key(KeyCode::Char('C'));
+        app.handle_key(KeyCode::Char('R'));
 
         assert_eq!(app.current_topic, 0);
         assert_eq!(app.topics[0].current_panel, 0);
@@ -597,5 +628,50 @@ mod tests {
         assert!(app.visited.is_empty());
         assert_eq!(app.screen, Screen::Topic);
         assert!(app.status_message.is_some());
+    }
+
+    fn make_app_with_text_asset(path: &str) -> App {
+        let text = Asset {
+            path: PathBuf::from(path),
+            kind: AssetKind::Text { content: "hello".into() },
+        };
+        let panel = Panel { assets: vec![text] };
+        let topic = Topic {
+            name: "topic-0".into(),
+            label: "Topic 0".into(),
+            panels: vec![panel],
+            current_panel: 0,
+        };
+        App {
+            screen: Screen::Topic,
+            topics: vec![topic],
+            current_topic: 0,
+            visited: HashSet::from([0]),
+            firework: None,
+            status_message: None,
+            pending_label: String::new(),
+            pending_content: String::new(),
+            selected_line: 0,
+            countdown_start: None,
+            joke_index: 0,
+            joke_timer: Instant::now(),
+            assets_dir: String::new(),
+        }
+    }
+
+    #[test]
+    fn c_sets_copied_status_when_text_asset_present() {
+        let mut app = make_app_with_text_asset("/some/path/text.md");
+        app.handle_key(KeyCode::Char('c'));
+        let msg = app.status_message.as_deref().unwrap_or("");
+        assert!(msg.contains("Path copied"), "expected 'Path copied' in: {msg}");
+    }
+
+    #[test]
+    fn c_sets_no_text_file_status_when_no_text_asset() {
+        let mut app = make_app(&[1]);
+        app.handle_key(KeyCode::Char('c'));
+        let msg = app.status_message.as_deref().unwrap_or("");
+        assert!(msg.contains("No text file"), "expected 'No text file' in: {msg}");
     }
 }
