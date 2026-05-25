@@ -6,3 +6,4 @@ graph TD
     D --> F[text.md]
     D --> G[prompt.md]
     E --> H[diagram.md]
+    E --> I[image.jpg]

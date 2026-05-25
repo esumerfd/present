@@ -34,6 +34,77 @@ pub fn render_to_lines(diagram_src: &str) -> Vec<Line<'static>> {
     }
 }
 
+/// Center a block of lines within the given area by prepending horizontal and vertical whitespace.
+/// The block is treated as a unit — each line gets the same left padding so the art stays intact.
+pub fn center_lines(lines: Vec<Line<'static>>, inner_width: u16, inner_height: u16) -> Vec<Line<'static>> {
+    if lines.is_empty() {
+        return lines;
+    }
+    let max_width = lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>())
+        .max()
+        .unwrap_or(0);
+
+    let h_pad = (inner_width as usize).saturating_sub(max_width) / 2;
+    let v_pad = (inner_height as usize).saturating_sub(lines.len()) / 2;
+
+    let prefix = " ".repeat(h_pad);
+    let mut result = Vec::with_capacity(v_pad + lines.len());
+    for _ in 0..v_pad {
+        result.push(Line::from(""));
+    }
+    for mut line in lines {
+        if h_pad > 0 {
+            line.spans.insert(0, Span::raw(prefix.clone()));
+        }
+        result.push(line);
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn center_lines_adds_horizontal_padding() {
+        let lines = vec![Line::from("ABC")];
+        let result = center_lines(lines, 9, 1);
+        let text = line_text(result.last().unwrap());
+        assert!(text.starts_with("   "), "expected 3 spaces of h-padding, got: {text:?}");
+        assert!(text.contains("ABC"));
+    }
+
+    #[test]
+    fn center_lines_adds_vertical_padding() {
+        let lines = vec![Line::from("ABC")];
+        let result = center_lines(lines, 5, 5);
+        assert_eq!(result.len(), 3, "1 content line + 2 blank top lines");
+        assert!(line_text(&result[0]).trim().is_empty(), "first line should be blank");
+        assert!(line_text(&result[1]).trim().is_empty(), "second line should be blank");
+        assert!(line_text(&result[2]).contains("ABC"));
+    }
+
+    #[test]
+    fn center_lines_no_negative_padding_when_content_wider_than_area() {
+        let lines = vec![Line::from("A".repeat(100))];
+        let result = center_lines(lines, 50, 5);
+        let text = line_text(result.last().unwrap());
+        assert!(text.contains("AAAA"), "content should be present");
+        assert!(!text.starts_with(' '), "no padding when content wider than area");
+    }
+
+    #[test]
+    fn center_lines_empty_input_returns_empty() {
+        assert!(center_lines(vec![], 80, 24).is_empty());
+    }
+}
+
 fn colorize(line: &str) -> Vec<Span<'static>> {
     let keyword = Style::default().fg(Color::Cyan);
     let arrow   = Style::default().fg(Color::Yellow);
