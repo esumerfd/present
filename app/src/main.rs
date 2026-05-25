@@ -19,12 +19,16 @@ use std::{io, time::Duration};
 
 enum Args {
     Help,
+    Version,
     Run { assets_dir: String, reset: bool },
 }
 
 fn parse_args(args: Vec<String>) -> Args {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         return Args::Help;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-v") {
+        return Args::Version;
     }
     let assets_dir = args
         .windows(2)
@@ -42,6 +46,7 @@ Options:
   --assets-dir <PATH>  Path to assets directory [default: assets]
   --reset              Clear saved position and start from the beginning
   -h, --help           Print help
+  -v, --version        Print version
 "
 }
 
@@ -49,6 +54,10 @@ fn main() -> Result<()> {
     match parse_args(std::env::args().skip(1).collect()) {
         Args::Help => {
             print!("{}", help_text());
+            Ok(())
+        }
+        Args::Version => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Args::Run { assets_dir, reset } => run(&assets_dir, reset),
@@ -158,5 +167,15 @@ mod tests {
         };
         assert_eq!(assets_dir, "/tmp");
         assert!(reset);
+    }
+
+    #[test]
+    fn version_long_flag() {
+        assert!(matches!(parse_args(vec!["--version".to_string()]), Args::Version));
+    }
+
+    #[test]
+    fn version_short_flag() {
+        assert!(matches!(parse_args(vec!["-v".to_string()]), Args::Version));
     }
 }

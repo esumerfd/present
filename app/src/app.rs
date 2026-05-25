@@ -16,7 +16,7 @@ const COUNTDOWN_SECS: u64 = 3;
 const JOKE_SECS: u64 = 5;
 
 pub const JOKES: &[&str] = &[
-    "Tonight's presenter... probably.",
+    "Warning: This is tonight's presenter.",
     "He asked Claude to write this joke.",
     "Warning: may hallucinate. Just like his AI.",
     "100% human. Claude won't confirm or deny.",
@@ -29,19 +29,26 @@ pub const JOKES: &[&str] = &[
     "Slides? Where we're going, we don't need slides.",
     "This talk was peer-reviewed by an LLM.",
     "His rubber duck is a language model.",
-    "He pair programs. Claude is the other half.",
     "Debugs with Claude. Ships with confidence.",
     "Stack Overflow? He hasn't visited in months.",
     "His IDE autocompletes his thoughts before he has them.",
     "Background: .NET developer. Foreground: AI enthusiast.",
     "Charges by the token. Tonight is free.",
     "He doesn't Google anymore. He prompts.",
+    "His favorite design pattern is the prompt pattern.",
+    "He once had a conversation with Claude. It lasted 3 days.",
+    "His code reviews are done by Claude. He just nods along.",
+    "He doesn't write unit tests. He writes prompts and hopes for the best.",
+    "His favorite programming language is the one Claude responds best to.",
+    "He doesn't have bugs. Just unexpected features that Claude will fix.",
+    "He once tried to fine-tune a model. It fine-tuned him instead.",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Screen {
     Intro,
     Topic,
+    Help,
     Confirm,
     Countdown,
 }
@@ -130,6 +137,7 @@ impl App {
                 self.status_message = None;
                 match key {
                     KeyCode::Char('q') => return true,
+                    KeyCode::Char('?') => self.screen = Screen::Help,
                     KeyCode::Char('C') => self.reset(),
                     KeyCode::Char(' ') | KeyCode::Char('l') | KeyCode::Down => self.next_panel(),
                     KeyCode::Char('h') | KeyCode::Up => self.prev_panel(),
@@ -149,6 +157,12 @@ impl App {
                     _ => {}
                 }
             }
+            Screen::Help => match key {
+                KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => {
+                    self.screen = Screen::Topic;
+                }
+                _ => {}
+            },
             Screen::Confirm => match key {
                 KeyCode::Enter | KeyCode::Char('g') | KeyCode::Char(' ') => {
                     self.screen = Screen::Countdown;
@@ -540,6 +554,29 @@ mod tests {
         app.handle_key(KeyCode::Char('S'));
         assert_eq!(app.screen, Screen::Confirm);
         assert_eq!(app.pending_content, "line1\nline2\nline3");
+    }
+
+    #[test]
+    fn question_mark_opens_help() {
+        let mut app = make_app(&[2]);
+        app.handle_key(KeyCode::Char('?'));
+        assert_eq!(app.screen, Screen::Help);
+    }
+
+    #[test]
+    fn question_mark_closes_help() {
+        let mut app = make_app(&[2]);
+        app.screen = Screen::Help;
+        app.handle_key(KeyCode::Char('?'));
+        assert_eq!(app.screen, Screen::Topic);
+    }
+
+    #[test]
+    fn esc_closes_help() {
+        let mut app = make_app(&[2]);
+        app.screen = Screen::Help;
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.screen, Screen::Topic);
     }
 
     #[test]

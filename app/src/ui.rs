@@ -31,12 +31,31 @@ fn cloud_seed(words: &[String]) -> u64 {
     })
 }
 
+fn cloud_position(seed: u64, wh: u64, index: usize, width: u64, height: u64) -> (u64, u64) {
+    let i = index as u64;
+    let x1 = (seed ^ wh ^ i.wrapping_mul(2654435761)) % width;
+    let x2 = (seed.wrapping_add(1) ^ wh.rotate_left(17) ^ i.wrapping_mul(1234567891)) % width;
+    let x3 = (seed.wrapping_add(2) ^ wh.rotate_right(13) ^ i.wrapping_mul(9876543219)) % width;
+    let raw_x = (x1 + x2 + x3) / 3;
+
+    let y1 = (seed ^ wh.rotate_left(32) ^ i.wrapping_mul(6364136223846793005)) % height;
+    let y2 = (seed.wrapping_add(3) ^ wh.rotate_left(48) ^ i.wrapping_mul(4294967311)) % height;
+    let y3 = (seed.wrapping_add(5) ^ wh.rotate_right(21) ^ i.wrapping_mul(2147483659)) % height;
+    let raw_y = (y1 + y2 + y3) / 3;
+
+    (raw_x, raw_y)
+}
+
 
 
 pub fn render(f: &mut Frame, app: &App) {
     match app.screen {
         Screen::Intro => render_intro(f, app),
         Screen::Topic => render_topic(f, app),
+        Screen::Help => {
+            render_topic(f, app);
+            render_help(f);
+        }
         Screen::Confirm => {
             render_topic(f, app);
             render_confirm(f, app);
@@ -285,8 +304,7 @@ fn render_word_cloud_asset(f: &mut Frame, panel: &Panel, area: Rect) {
 
     for (i, word) in words.iter().enumerate() {
         let wh = word_hash(word);
-        let raw_x = (seed ^ wh ^ (i as u64).wrapping_mul(2654435761)) % inner.width as u64;
-        let raw_y = (seed ^ wh.rotate_left(32) ^ (i as u64).wrapping_mul(6364136223846793005)) % inner.height as u64;
+        let (raw_x, raw_y) = cloud_position(seed, wh, i, inner.width as u64, inner.height as u64);
         let x = inner.x + (raw_x as u16).min(inner.width.saturating_sub(word.len() as u16));
         let y = inner.y + raw_y as u16;
 
@@ -395,18 +413,60 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_status(f: &mut Frame, app: &App, has_prompt: bool, area: Rect) {
+fn render_status(f: &mut Frame, app: &App, _has_prompt: bool, area: Rect) {
     let msg = if let Some(status) = &app.status_message {
         status.clone()
-    } else if has_prompt {
-        "SPACE/l: next panel  h: prev  →: next topic  ←: prev topic  j/k: select line  s: send line  S: send all  C: reset  q: quit".to_string()
     } else {
-        "SPACE/l: next panel  h: prev  →: next topic  ←: prev topic  C: reset  q: quit".to_string()
+        "SPACE/l: next  ?: help".to_string()
     };
 
     f.render_widget(
         Paragraph::new(Span::styled(format!(" {msg}"), Style::default().fg(Color::DarkGray))),
         area,
+    );
+}
+
+fn render_help(f: &mut Frame) {
+    let area = f.area();
+    let popup = centered_rect(50, 18, area);
+    f.render_widget(Clear, popup);
+    f.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .title(" Help "),
+        popup,
+    );
+
+    let inner = Rect {
+        x: popup.x + 2,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(4),
+        height: popup.height.saturating_sub(2),
+    };
+
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    let desc = |d: &'static str| Span::styled(d, Style::default().fg(Color::White));
+    let sep = || Span::raw("  ");
+
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(""),
+            Line::from(vec![key("SPACE / l"), sep(), desc("Next")]),
+            Line::from(vec![key("h"),         sep(), desc("Previous")]),
+            Line::from(vec![key("→"),          sep(), desc("Next topic")]),
+            Line::from(vec![key("←"),          sep(), desc("Previous topic")]),
+            Line::from(""),
+            Line::from(vec![key("j / k"),     sep(), desc("Select prompt line")]),
+            Line::from(vec![key("s"),          sep(), desc("Send selected line")]),
+            Line::from(vec![key("S"),          sep(), desc("Send all lines")]),
+            Line::from(""),
+            Line::from(vec![key("C"),          sep(), desc("Reset to start")]),
+            Line::from(vec![key("q"),          sep(), desc("Quit")]),
+            Line::from(""),
+            Line::from(vec![key("?  Esc"),     sep(), desc("Close this help")]),
+        ]),
+        inner,
     );
 }
 
@@ -566,5 +626,48 @@ mod tests {
     #[test]
     fn cloud_seed_empty_list_does_not_panic() {
         let _ = cloud_seed(&[]);
+    }
+
+    #[test]
+    fn cloud_position_is_deterministic() {
+        let wh = word_hash("test");
+        let (x1, y1) = cloud_position(12345, wh, 0, 100, 40);
+        let (x2, y2) = cloud_position(12345, wh, 0, 100, 40);
+        assert_eq!((x1, y1), (x2, y2));
+    }
+
+    #[test]
+    fn cloud_position_is_center_biased() {
+        let width = 100u64;
+        let height = 40u64;
+        let words: Vec<String> = (0..500).map(|i| format!("word{}", i)).collect();
+        let seed = cloud_seed(&words);
+
+        let mut center_count = 0u32;
+        let mut edge_count = 0u32;
+
+        for (i, word) in words.iter().enumerate() {
+            let wh = word_hash(word);
+            let (x, y) = cloud_position(seed, wh, i, width, height);
+
+            let x_center = x >= width / 4 && x < 3 * width / 4;
+            let y_center = y >= height / 4 && y < 3 * height / 4;
+            if x_center && y_center {
+                center_count += 1;
+            }
+
+            let x_edge = x < width / 4 || x >= 3 * width / 4;
+            let y_edge = y < height / 4 || y >= 3 * height / 4;
+            if x_edge && y_edge {
+                edge_count += 1;
+            }
+        }
+
+        assert!(
+            center_count > edge_count,
+            "center ({}) should have more words than corners ({})",
+            center_count,
+            edge_count
+        );
     }
 }
