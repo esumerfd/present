@@ -45,6 +45,14 @@ impl Panel {
     pub fn has_word_cloud(&self) -> bool {
         self.assets.iter().any(|a| matches!(a.kind, AssetKind::WordCloud { .. }))
     }
+
+    pub fn image(&self) -> Option<&Asset> {
+        self.assets.iter().find(|a| matches!(a.kind, AssetKind::Image { .. }))
+    }
+
+    pub fn has_image(&self) -> bool {
+        self.assets.iter().any(|a| matches!(a.kind, AssetKind::Image { .. }))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +78,9 @@ pub enum AssetKind {
     WordCloud {
         title: String,
         words: Vec<String>,
+    },
+    Image {
+        image: image::DynamicImage,
     },
 }
 
@@ -145,6 +156,22 @@ fn load_panels(topic_path: &Path) -> Result<Vec<Panel>> {
             assets.push(Asset { path: word_cloud_file, kind: AssetKind::WordCloud { title, words } });
         }
 
+        for ext in &["jpg", "jpeg", "png"] {
+            let image_file = dir.join(format!("image.{ext}"));
+            if image_file.exists() {
+                match image::open(&image_file) {
+                    Ok(img) => {
+                        // Pre-scale to a terminal-appropriate maximum so render-time resize is fast.
+                        // A 300-column terminal needs at most ~600×400 pixels via halfblock.
+                        let img = img.resize(600, 400, image::imageops::FilterType::Triangle);
+                        assets.push(Asset { path: image_file, kind: AssetKind::Image { image: img } });
+                    }
+                    Err(e) => eprintln!("Failed to load image {}: {e}", image_file.display()),
+                }
+                break;
+            }
+        }
+
         if !assets.is_empty() {
             panels.push(Panel { assets });
         }
@@ -204,6 +231,41 @@ mod tests {
             parse_word_cloud_words(content),
             vec!["ownership", "borrowing"]
         );
+    }
+
+    #[test]
+    fn has_image_false_when_absent() {
+        let text = Asset {
+            path: PathBuf::from("text.md"),
+            kind: AssetKind::Text { content: "hello".into() },
+        };
+        let panel = Panel { assets: vec![text] };
+        assert!(!panel.has_image());
+    }
+
+    #[test]
+    fn has_image_true_when_present() {
+        use image::{DynamicImage, ImageBuffer, Rgb};
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_fn(1, 1, |_, _| Rgb([0u8, 0, 0])));
+        let asset = Asset {
+            path: PathBuf::from("image.jpg"),
+            kind: AssetKind::Image { image: img },
+        };
+        let panel = Panel { assets: vec![asset] };
+        assert!(panel.has_image());
+    }
+
+    #[test]
+    fn image_returns_the_asset() {
+        use image::{DynamicImage, ImageBuffer, Rgb};
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_fn(1, 1, |_, _| Rgb([0u8, 0, 0])));
+        let asset = Asset {
+            path: PathBuf::from("image.jpg"),
+            kind: AssetKind::Image { image: img },
+        };
+        let panel = Panel { assets: vec![asset] };
+        let found = panel.image().expect("should find image asset");
+        assert!(matches!(found.kind, AssetKind::Image { .. }));
     }
 
     #[test]

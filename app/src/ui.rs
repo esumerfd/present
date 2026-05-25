@@ -189,6 +189,30 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) 
     let has_diagram    = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Diagram { .. }));
     let has_prompt     = panel.has_prompt();
     let has_word_cloud = panel.has_word_cloud();
+    let has_image      = panel.has_image();
+
+    if has_image && !has_text && !has_diagram && !has_word_cloud && !has_prompt {
+        render_image_asset(f, panel, area);
+        return;
+    }
+    if has_image && has_prompt && !has_text && !has_diagram && !has_word_cloud {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+            .split(area);
+        render_image_asset(f, panel, rows[0]);
+        render_prompt_asset(f, panel, rows[1], selected_line);
+        return;
+    }
+    if has_image && has_text && !has_prompt && !has_diagram && !has_word_cloud {
+        let sides = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+        render_image_asset(f, panel, sides[0]);
+        render_text_asset(f, panel, sides[1]);
+        return;
+    }
 
     match (has_text, has_diagram, has_prompt, has_word_cloud) {
         // text + diagram takes priority over word cloud when all three present
@@ -258,6 +282,47 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) 
             );
         }
     }
+}
+
+fn render_image_asset(f: &mut Frame, panel: &Panel, area: Rect) {
+    use crate::assets::AssetKind;
+    let Some(asset) = panel.image() else { return };
+    let AssetKind::Image { image } = &asset.kind else { return };
+
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let target_w = area.width as u32;
+    let target_h = area.height as u32 * 2;
+    let scaled = image.resize(target_w, target_h, image::imageops::FilterType::Nearest);
+    let rgba = scaled.to_rgba8();
+    let w = rgba.width();
+    let h = rgba.height();
+
+    let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+    let mut row = 0u32;
+    while row < h {
+        let mut spans: Vec<ratatui::text::Span<'static>> = Vec::new();
+        for col in 0..w {
+            let top = rgba.get_pixel(col, row);
+            let bottom = if row + 1 < h {
+                *rgba.get_pixel(col, row + 1)
+            } else {
+                image::Rgba([0, 0, 0, 255])
+            };
+            spans.push(ratatui::text::Span::styled(
+                "▀",
+                ratatui::style::Style::default()
+                    .fg(Color::Rgb(top[0], top[1], top[2]))
+                    .bg(Color::Rgb(bottom[0], bottom[1], bottom[2])),
+            ));
+        }
+        lines.push(ratatui::text::Line::from(spans));
+        row += 2;
+    }
+
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_text_asset(f: &mut Frame, panel: &Panel, area: Rect) {
