@@ -1,6 +1,7 @@
 mod app;
 mod assets;
 mod claude;
+mod export;
 mod firework;
 mod markdown;
 mod mermaid;
@@ -20,6 +21,7 @@ use std::{io, time::Duration};
 enum Args {
     Help,
     Version,
+    Export { assets_dir: String, output: String },
     Run { assets_dir: String, reset: bool },
 }
 
@@ -35,6 +37,9 @@ fn parse_args(args: Vec<String>) -> Args {
         .find(|w| w[0] == "--assets-dir")
         .map(|w| w[1].clone())
         .unwrap_or_else(|| "assets".to_string());
+    if let Some(output) = args.windows(2).find(|w| w[0] == "--export").map(|w| w[1].clone()) {
+        return Args::Export { assets_dir, output };
+    }
     let reset = args.iter().any(|a| a == "--reset");
     Args::Run { assets_dir, reset }
 }
@@ -44,6 +49,7 @@ fn help_text() -> &'static str {
 
 Options:
   --assets-dir <PATH>  Path to assets directory [default: assets]
+  --export <FILE>      Export all topic text and prompts to a file and exit
   --reset              Clear saved position and start from the beginning
   -h, --help           Print help
   -v, --version        Print version
@@ -58,6 +64,11 @@ fn main() -> Result<()> {
         }
         Args::Version => {
             println!("{}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        Args::Export { assets_dir, output } => {
+            export::export_to_file(&assets_dir, &output)?;
+            println!("Exported to {output}");
             Ok(())
         }
         Args::Run { assets_dir, reset } => run(&assets_dir, reset),
@@ -177,5 +188,33 @@ mod tests {
     #[test]
     fn version_short_flag() {
         assert!(matches!(parse_args(vec!["-v".to_string()]), Args::Version));
+    }
+
+    #[test]
+    fn export_flag_parses_output_filename() {
+        let args = vec!["--export".to_string(), "output.txt".to_string()];
+        let Args::Export { output, .. } = parse_args(args) else {
+            panic!("expected Export variant");
+        };
+        assert_eq!(output, "output.txt");
+    }
+
+    #[test]
+    fn export_flag_uses_default_assets_dir() {
+        let args = vec!["--export".to_string(), "out.txt".to_string()];
+        let Args::Export { assets_dir, .. } = parse_args(args) else {
+            panic!("expected Export variant");
+        };
+        assert_eq!(assets_dir, "assets");
+    }
+
+    #[test]
+    fn export_flag_combines_with_assets_dir() {
+        let args = vec!["--assets-dir".to_string(), "/tmp".to_string(), "--export".to_string(), "out.txt".to_string()];
+        let Args::Export { assets_dir, output } = parse_args(args) else {
+            panic!("expected Export variant");
+        };
+        assert_eq!(assets_dir, "/tmp");
+        assert_eq!(output, "out.txt");
     }
 }
