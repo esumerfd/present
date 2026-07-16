@@ -9,7 +9,7 @@ run: build
 	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo run --manifest-path app/Cargo.toml
 
 demo: build
-	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo run --manifest-path app/Cargo.toml -- --assets-dir assets/demo
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo run --manifest-path app/Cargo.toml -- assets/demo
 
 release:
 	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo build --release --manifest-path app/Cargo.toml

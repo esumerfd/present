@@ -63,6 +63,7 @@ pub struct App {
     pub pending_label: String,
     pub pending_content: String,
     pub selected_line: usize,
+    pub selected_lines: HashSet<usize>,
     pub countdown_start: Option<Instant>,
     pub joke_index: usize,
     pub joke_timer: Instant,
@@ -85,6 +86,7 @@ impl App {
             pending_label: String::new(),
             pending_content: String::new(),
             selected_line: 0,
+            selected_lines: HashSet::new(),
             countdown_start: None,
             joke_index: 0,
             joke_timer: Instant::now(),
@@ -139,7 +141,8 @@ impl App {
                     KeyCode::Char('q') => return true,
                     KeyCode::Char('?') => self.screen = Screen::Help,
                     KeyCode::Char('R') => self.reset(),
-                    KeyCode::Char('c') => self.copy_text_path_to_clipboard(),
+                    KeyCode::Char('c') => self.toggle_selected_line(),
+                    KeyCode::Char('C') => self.copy_text_path_to_clipboard(),
                     KeyCode::Char(' ') | KeyCode::Char('l') | KeyCode::Down => self.next_panel(),
                     KeyCode::Char('h') | KeyCode::Up => self.prev_panel(),
                     KeyCode::Right => self.next_topic(),
@@ -171,6 +174,7 @@ impl App {
                 }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
                     self.screen = Screen::Topic;
+                    self.selected_lines.clear();
                     self.status_message = Some("Cancelled".to_string());
                 }
                 _ => {}
@@ -179,6 +183,7 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
                     self.screen = Screen::Topic;
                     self.countdown_start = None;
+                    self.selected_lines.clear();
                     self.status_message = Some("Cancelled".to_string());
                 }
                 _ => {}
@@ -197,6 +202,7 @@ impl App {
     fn enter_topic(&mut self, idx: usize) {
         self.current_topic = idx;
         self.selected_line = 0;
+        self.selected_lines.clear();
         if let Some(topic) = self.topics.get_mut(idx) {
             topic.current_panel = 0;
         }
@@ -230,6 +236,7 @@ impl App {
         if next < panel_count {
             self.topics[self.current_topic].current_panel = next;
             self.selected_line = 0;
+            self.selected_lines.clear();
             self.persist_state();
         } else {
             let next_topic = self.current_topic + 1;
@@ -247,6 +254,7 @@ impl App {
         if current_panel > 0 {
             self.topics[self.current_topic].current_panel = current_panel - 1;
             self.selected_line = 0;
+            self.selected_lines.clear();
             self.persist_state();
         } else if self.current_topic > 0 {
             let prev_idx = self.current_topic - 1;
@@ -267,6 +275,22 @@ impl App {
             .unwrap_or(0)
     }
 
+    fn toggle_selected_line(&mut self) {
+        let Some(topic) = self.topics.get(self.current_topic) else { return };
+        let Some(panel) = topic.current_panel() else { return };
+        let Some(asset) = panel.prompt() else {
+            self.status_message = Some("No prompt on this panel".to_string());
+            return;
+        };
+        let AssetKind::Prompt { content, .. } = &asset.kind else { return };
+        let line_count = content.lines().filter(|l| !l.trim().is_empty()).count();
+        if line_count == 0 { return; }
+        let idx = self.selected_line.min(line_count - 1);
+        if !self.selected_lines.remove(&idx) {
+            self.selected_lines.insert(idx);
+        }
+    }
+
     fn stage_send_selected(&mut self) {
         let Some(topic) = self.topics.get(self.current_topic) else { return };
         let Some(panel) = topic.current_panel() else { return };
@@ -277,10 +301,22 @@ impl App {
         let AssetKind::Prompt { label, content, .. } = &asset.kind else { return };
         let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         if lines.is_empty() { return; }
-        let idx = self.selected_line.min(lines.len() - 1);
-        let selected = lines[idx].to_string();
+
+        let selected_content = if self.selected_lines.is_empty() {
+            let idx = self.selected_line.min(lines.len() - 1);
+            lines[idx].to_string()
+        } else {
+            let mut indices: Vec<usize> = self.selected_lines.iter().copied().collect();
+            indices.sort_unstable();
+            indices
+                .iter()
+                .filter_map(|&i| lines.get(i).copied())
+                .collect::<Vec<&str>>()
+                .join("\n")
+        };
+
         self.pending_label = label.clone();
-        self.pending_content = selected;
+        self.pending_content = selected_content;
         self.screen = Screen::Confirm;
     }
 
@@ -298,6 +334,7 @@ impl App {
     }
 
     fn execute_send(&mut self) {
+        self.selected_lines.clear();
         let Some(topic) = self.topics.get(self.current_topic) else { return };
         let panel_idx = topic.current_panel;
         let topic_name = topic.name.clone();
@@ -357,6 +394,7 @@ impl App {
         }
         self.visited = HashSet::new();
         self.selected_line = 0;
+        self.selected_lines.clear();
         self.screen = Screen::Topic;
         self.status_message = Some("State cleared — starting from the beginning".to_string());
         let _ = crate::state::clear_state(&self.assets_dir);
@@ -411,6 +449,7 @@ mod tests {
             pending_label: String::new(),
             pending_content: String::new(),
             selected_line: 0,
+            selected_lines: HashSet::new(),
             countdown_start: None,
             joke_index: 0,
             joke_timer: Instant::now(),
@@ -444,6 +483,7 @@ mod tests {
             pending_label: String::new(),
             pending_content: String::new(),
             selected_line: 0,
+            selected_lines: HashSet::new(),
             countdown_start: None,
             joke_index: 0,
             joke_timer: Instant::now(),
@@ -652,6 +692,7 @@ mod tests {
             pending_label: String::new(),
             pending_content: String::new(),
             selected_line: 0,
+            selected_lines: HashSet::new(),
             countdown_start: None,
             joke_index: 0,
             joke_timer: Instant::now(),
@@ -660,18 +701,102 @@ mod tests {
     }
 
     #[test]
-    fn c_sets_copied_status_when_text_asset_present() {
+    fn capital_c_sets_copied_status_when_text_asset_present() {
         let mut app = make_app_with_text_asset("/some/path/text.md");
-        app.handle_key(KeyCode::Char('c'));
+        app.handle_key(KeyCode::Char('C'));
         let msg = app.status_message.as_deref().unwrap_or("");
         assert!(msg.contains("Path copied"), "expected 'Path copied' in: {msg}");
     }
 
     #[test]
-    fn c_sets_no_text_file_status_when_no_text_asset() {
+    fn capital_c_sets_no_text_file_status_when_no_text_asset() {
+        let mut app = make_app(&[1]);
+        app.handle_key(KeyCode::Char('C'));
+        let msg = app.status_message.as_deref().unwrap_or("");
+        assert!(msg.contains("No text file"), "expected 'No text file' in: {msg}");
+    }
+
+    #[test]
+    fn lowercase_c_toggles_line_into_selected_lines() {
+        let mut app = make_app_with_prompt("line1\nline2\nline3");
+        app.selected_line = 1;
+        app.handle_key(KeyCode::Char('c'));
+        assert!(app.selected_lines.contains(&1));
+        assert_eq!(app.screen, Screen::Topic);
+    }
+
+    #[test]
+    fn lowercase_c_toggles_line_out_of_selected_lines() {
+        let mut app = make_app_with_prompt("line1\nline2\nline3");
+        app.selected_line = 1;
+        app.handle_key(KeyCode::Char('c'));
+        app.handle_key(KeyCode::Char('c'));
+        assert!(!app.selected_lines.contains(&1));
+    }
+
+    #[test]
+    fn lowercase_c_with_no_prompt_sets_status_and_no_selection() {
         let mut app = make_app(&[1]);
         app.handle_key(KeyCode::Char('c'));
         let msg = app.status_message.as_deref().unwrap_or("");
-        assert!(msg.contains("No text file"), "expected 'No text file' in: {msg}");
+        assert!(msg.contains("No prompt on this panel"), "expected 'No prompt' in: {msg}");
+        assert!(app.selected_lines.is_empty());
+    }
+
+    #[test]
+    fn s_sends_joined_selected_lines_in_document_order() {
+        let mut app = make_app_with_prompt("line1\nline2\nline3");
+        app.selected_line = 2;
+        app.handle_key(KeyCode::Char('c')); // select line3 first
+        app.selected_line = 0;
+        app.handle_key(KeyCode::Char('c')); // then select line1
+        app.handle_key(KeyCode::Char('s'));
+        assert_eq!(app.screen, Screen::Confirm);
+        assert_eq!(app.pending_content, "line1\nline3");
+    }
+
+    #[test]
+    fn s_falls_back_to_cursor_line_when_no_selection() {
+        let mut app = make_app_with_prompt("line1\nline2\nline3");
+        app.selected_line = 1;
+        app.handle_key(KeyCode::Char('s'));
+        assert_eq!(app.screen, Screen::Confirm);
+        assert_eq!(app.pending_content, "line2");
+    }
+
+    #[test]
+    fn selected_lines_resets_on_panel_change() {
+        let mut app = make_app_with_prompt("line1\nline2");
+        app.topics[0].panels.push(Panel { assets: vec![] });
+        app.selected_line = 1;
+        app.handle_key(KeyCode::Char('c'));
+        assert!(!app.selected_lines.is_empty());
+        app.handle_key(KeyCode::Char('l'));
+        assert!(app.selected_lines.is_empty());
+    }
+
+    #[test]
+    fn selected_lines_resets_after_cancel_from_confirm() {
+        let mut app = make_app_with_prompt("line1\nline2");
+        app.selected_line = 0;
+        app.handle_key(KeyCode::Char('c'));
+        app.handle_key(KeyCode::Char('s'));
+        assert_eq!(app.screen, Screen::Confirm);
+        app.handle_key(KeyCode::Char('n'));
+        assert_eq!(app.screen, Screen::Topic);
+        assert!(app.selected_lines.is_empty());
+    }
+
+    #[test]
+    fn selected_lines_resets_after_successful_send() {
+        let mut app = make_app_with_prompt("line1\nline2");
+        app.selected_line = 0;
+        app.handle_key(KeyCode::Char('c'));
+        app.handle_key(KeyCode::Char('s'));
+        app.handle_key(KeyCode::Enter);
+        app.countdown_start = Some(Instant::now() - std::time::Duration::from_secs(10));
+        app.tick();
+        assert_eq!(app.screen, Screen::Topic);
+        assert!(app.selected_lines.is_empty());
     }
 }

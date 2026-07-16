@@ -32,23 +32,46 @@ fn parse_args(args: Vec<String>) -> Args {
     if args.iter().any(|a| a == "--version" || a == "-v") {
         return Args::Version;
     }
-    let assets_dir = args
-        .windows(2)
-        .find(|w| w[0] == "--assets-dir")
-        .map(|w| w[1].clone())
-        .unwrap_or_else(|| "assets".to_string());
-    if let Some(output) = args.windows(2).find(|w| w[0] == "--export").map(|w| w[1].clone()) {
+
+    let mut assets_dir: Option<String> = None;
+    let mut export_output: Option<String> = None;
+    let mut reset = false;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--export" => {
+                export_output = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--reset" => {
+                reset = true;
+                i += 1;
+            }
+            other => {
+                if assets_dir.is_none() {
+                    assets_dir = Some(other.to_string());
+                }
+                i += 1;
+            }
+        }
+    }
+
+    let assets_dir = assets_dir.unwrap_or_else(|| "assets".to_string());
+
+    if let Some(output) = export_output {
         return Args::Export { assets_dir, output };
     }
-    let reset = args.iter().any(|a| a == "--reset");
     Args::Run { assets_dir, reset }
 }
 
 fn help_text() -> &'static str {
-    "Usage: cinnug-presentation [OPTIONS]
+    "Usage: cinnug-presentation [ASSETS_DIR] [OPTIONS]
+
+Arguments:
+  [ASSETS_DIR]         Path to assets directory [default: assets]
 
 Options:
-  --assets-dir <PATH>  Path to assets directory [default: assets]
   --export <FILE>      Export all topic text and prompts to a file and exit
   --reset              Clear saved position and start from the beginning
   -h, --help           Print help
@@ -138,8 +161,8 @@ mod tests {
     }
 
     #[test]
-    fn assets_dir_arg() {
-        let args = vec!["--assets-dir".to_string(), "/path/to/assets".to_string()];
+    fn assets_dir_positional_arg() {
+        let args = vec!["/path/to/assets".to_string()];
         let Args::Run { assets_dir, .. } = parse_args(args) else {
             panic!("expected Run variant");
         };
@@ -172,7 +195,7 @@ mod tests {
 
     #[test]
     fn reset_flag_combines_with_assets_dir() {
-        let args = vec!["--assets-dir".to_string(), "/tmp".to_string(), "--reset".to_string()];
+        let args = vec!["/tmp".to_string(), "--reset".to_string()];
         let Args::Run { assets_dir, reset } = parse_args(args) else {
             panic!("expected Run variant");
         };
@@ -210,11 +233,21 @@ mod tests {
 
     #[test]
     fn export_flag_combines_with_assets_dir() {
-        let args = vec!["--assets-dir".to_string(), "/tmp".to_string(), "--export".to_string(), "out.txt".to_string()];
+        let args = vec!["/tmp".to_string(), "--export".to_string(), "out.txt".to_string()];
         let Args::Export { assets_dir, output } = parse_args(args) else {
             panic!("expected Export variant");
         };
         assert_eq!(assets_dir, "/tmp");
         assert_eq!(output, "out.txt");
+    }
+
+    #[test]
+    fn positional_assets_dir_can_follow_flags() {
+        let args = vec!["--reset".to_string(), "/tmp".to_string()];
+        let Args::Run { assets_dir, reset } = parse_args(args) else {
+            panic!("expected Run variant");
+        };
+        assert_eq!(assets_dir, "/tmp");
+        assert!(reset);
     }
 }

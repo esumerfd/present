@@ -1,6 +1,7 @@
 use crate::app::{App, Screen};
 use crate::assets::{AssetKind, Panel};
 use crate::firework::{Firework, COLORS};
+use std::collections::HashSet;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -174,7 +175,7 @@ fn render_topic(f: &mut Frame, app: &App) {
     render_header(f, app, chunks[0]);
 
     if let Some(panel) = topic.current_panel() {
-        render_panel(f, panel, chunks[1], app.selected_line);
+        render_panel(f, panel, chunks[1], app.selected_line, &app.selected_lines);
     }
 
     render_status(f, app, has_prompt, chunks[2]);
@@ -184,7 +185,7 @@ fn render_topic(f: &mut Frame, app: &App) {
     }
 }
 
-fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) {
+fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize, selected_lines: &HashSet<usize>) {
     let has_text       = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Text { .. }));
     let has_diagram    = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Diagram { .. }));
     let has_prompt     = panel.has_prompt();
@@ -201,7 +202,7 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) 
             .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
             .split(area);
         render_image_asset(f, panel, rows[0]);
-        render_prompt_asset(f, panel, rows[1], selected_line);
+        render_prompt_asset(f, panel, rows[1], selected_line, selected_lines);
         return;
     }
     if has_image && has_text && !has_prompt && !has_diagram && !has_word_cloud {
@@ -230,7 +231,7 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) 
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(area);
             render_text_asset(f, panel, rows[0]);
-            render_prompt_asset(f, panel, rows[1], selected_line);
+            render_prompt_asset(f, panel, rows[1], selected_line, selected_lines);
         }
         (false, true, true, _) => {
             let rows = Layout::default()
@@ -238,7 +239,7 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) 
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(area);
             render_diagram_asset(f, panel, rows[0]);
-            render_prompt_asset(f, panel, rows[1], selected_line);
+            render_prompt_asset(f, panel, rows[1], selected_line, selected_lines);
         }
         (_, true, false, false) => render_diagram_asset(f, panel, area),
         (true, false, false, false) => render_text_asset(f, panel, area),
@@ -250,7 +251,7 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) 
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(area);
             render_word_cloud_asset(f, panel, rows[0]);
-            render_prompt_asset(f, panel, rows[1], selected_line);
+            render_prompt_asset(f, panel, rows[1], selected_line, selected_lines);
         }
         (true, false, false, true) => {
             let sides = Layout::default()
@@ -273,7 +274,7 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) 
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(area);
-            render_prompt_asset(f, panel, rows[1], selected_line);
+            render_prompt_asset(f, panel, rows[1], selected_line, selected_lines);
         }
         _ => {
             f.render_widget(
@@ -381,7 +382,7 @@ fn render_word_cloud_asset(f: &mut Frame, panel: &Panel, area: Rect) {
                 if let Some(cell) = buf.cell_mut((cx, y)) {
                     cell.set_char(ch);
                     cell.set_fg(color);
-                    cell.set_skip(false);
+                    cell.set_diff_option(ratatui::buffer::CellDiffOption::None);
                 }
             }
         }
@@ -419,19 +420,28 @@ fn render_diagram_asset(f: &mut Frame, panel: &Panel, area: Rect) {
     );
 }
 
-fn render_prompt_asset(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize) {
+fn render_prompt_asset(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize, selected_lines: &HashSet<usize>) {
     let Some(asset) = panel.prompt() else { return };
     let AssetKind::Prompt { label, content, sent } = &asset.kind else { return };
     let title = if *sent { format!(" {} ✓ ", label) } else { format!(" {} ", label) };
     let non_blank: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
     let lines: Vec<Line> = non_blank.iter().enumerate().map(|(i, l)| {
-        if i == selected_line {
-            Line::from(vec![
+        let is_cursor = i == selected_line;
+        let is_selected = selected_lines.contains(&i);
+        match (is_cursor, is_selected) {
+            (true, true) => Line::from(vec![
+                Span::styled("✓ ", Style::default().fg(Color::Green).bg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled(l.to_string(), Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ]),
+            (true, false) => Line::from(vec![
                 Span::styled("> ", Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)),
                 Span::styled(l.to_string(), Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            ])
-        } else {
-            Line::from(Span::styled(format!("  {l}"), Style::default().fg(Color::Yellow)))
+            ]),
+            (false, true) => Line::from(vec![
+                Span::styled("✓ ", Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(l.to_string(), Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]),
+            (false, false) => Line::from(Span::styled(format!("  {l}"), Style::default().fg(Color::Yellow))),
         }
     }).collect();
     f.render_widget(
@@ -526,11 +536,12 @@ fn render_help(f: &mut Frame) {
             Line::from(vec![key("→"),          sep(), desc("Next topic")]),
             Line::from(vec![key("←"),          sep(), desc("Previous topic")]),
             Line::from(""),
-            Line::from(vec![key("j / k"),     sep(), desc("Select prompt line")]),
-            Line::from(vec![key("s"),          sep(), desc("Send selected line")]),
+            Line::from(vec![key("j / k"),     sep(), desc("Move prompt cursor")]),
+            Line::from(vec![key("c"),          sep(), desc("Toggle select line")]),
+            Line::from(vec![key("s"),          sep(), desc("Send selection (or cursor line)")]),
             Line::from(vec![key("S"),          sep(), desc("Send all lines")]),
             Line::from(""),
-            Line::from(vec![key("c"),          sep(), desc("Copy text file path")]),
+            Line::from(vec![key("C"),          sep(), desc("Copy text file path")]),
             Line::from(vec![key("R"),          sep(), desc("Reset to start")]),
             Line::from(vec![key("q"),          sep(), desc("Quit")]),
             Line::from(""),
@@ -643,7 +654,7 @@ fn render_firework(f: &mut Frame, fw: &Firework, area: Rect) {
             if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
                 cell.set_char(p.ch);
                 cell.set_fg(color);
-                cell.set_skip(false);
+                cell.set_diff_option(ratatui::buffer::CellDiffOption::None);
             }
         }
     }
