@@ -30,7 +30,7 @@ make install
 
 Then run it with the included demo assets:
 ```bash
-present --assets-dir assets/demo
+present assets/demo
 ```
 
 ## Asset Directory Structure
@@ -67,7 +67,7 @@ The first heading becomes the panel label.
 
 ### `prompt.md` — Claude prompt
 
-A prompt ready to fire at Claude during the presentation. Displayed in the lower portion of the screen. Press `s` to stage it — a countdown starts, giving you time to switch to Claude — then the prompt is automatically typed into an iTerm2 session via AppleScript. If iTerm2 is not available it falls back to copying the prompt to the clipboard for manual paste (`⌘V`).
+A prompt ready to fire at Claude during the presentation. Displayed in the lower portion of the screen. Move the cursor with `j`/`k` and toggle individual lines into a selection with `c` (each gets a green ✓ highlight). Press `s` to stage — if you've selected lines it sends all of them joined together, otherwise it sends just the line under the cursor. Staging starts a countdown, giving you time to switch to Claude, then the content is automatically typed into an iTerm2 session via AppleScript. If iTerm2 is not available it falls back to copying to the clipboard for manual paste (`⌘V`).
 
 The first heading becomes the label shown in the UI; everything after it is the prompt text sent to Claude.
 
@@ -92,7 +92,14 @@ graph TD
 
 | Key | Action |
 |-----|--------|
-| `l` / `h` | Next / previous panel |
-| `j` / `k` | Next / previous topic |
-| `s` | Stage prompt send — starts countdown, then auto-types into iTerm2 or copies to clipboard |
+| `l` / `Space` / `↓` | Next panel |
+| `h` / `↑` | Previous panel |
+| `→` / `←` | Next / previous topic |
+| `j` / `k` | Move prompt cursor down / up |
+| `c` | Toggle-select the prompt line under the cursor |
+| `s` | Stage send — selected lines if any, else the cursor line — starts countdown, then auto-types into iTerm2 or copies to clipboard |
+| `S` | Stage send — all lines in the prompt |
+| `C` | Copy the panel's text file path to the clipboard |
+| `R` | Reset to the start |
+| `?` | Toggle help |
 | `q` | Quit |
