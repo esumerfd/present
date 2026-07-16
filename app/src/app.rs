@@ -3,7 +3,7 @@ use crate::firework::Firework;
 use crate::state::PresentationState;
 use crossterm::event::KeyCode;
 use std::collections::HashSet;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 fn dbg(msg: &str) {
     use std::io::Write;
@@ -14,6 +14,7 @@ fn dbg(msg: &str) {
 
 const COUNTDOWN_SECS: u64 = 3;
 const JOKE_SECS: u64 = 5;
+const POLL_SECS: u64 = 5;
 
 pub const JOKES: &[&str] = &[
     "Warning: This is tonight's presenter.",
@@ -68,6 +69,8 @@ pub struct App {
     pub joke_index: usize,
     pub joke_timer: Instant,
     pub assets_dir: String,
+    pub last_poll: Instant,
+    pub last_dir_signature: (usize, SystemTime),
 }
 
 impl App {
@@ -76,6 +79,8 @@ impl App {
         for (i, t) in topics.iter().enumerate() {
             dbg(&format!("topic[{}] {} panels={}", i, t.name, t.panels.len()));
         }
+        let last_dir_signature = crate::assets::dir_signature(assets_dir)
+            .unwrap_or((0, SystemTime::UNIX_EPOCH));
         let mut app = Self {
             screen: Screen::Intro,
             topics,
@@ -91,6 +96,8 @@ impl App {
             joke_index: 0,
             joke_timer: Instant::now(),
             assets_dir: assets_dir.to_string(),
+            last_poll: Instant::now(),
+            last_dir_signature,
         };
         if let Ok(Some(state)) = crate::state::load_state(assets_dir) {
             app.apply_state(state);
@@ -422,6 +429,30 @@ impl App {
                 }
             }
         }
+
+        if self.screen == Screen::Topic && self.last_poll.elapsed().as_secs() >= POLL_SECS {
+            self.last_poll = Instant::now();
+            self.poll_for_changes();
+        }
+    }
+
+    fn poll_for_changes(&mut self) {
+        let Ok(signature) = crate::assets::dir_signature(&self.assets_dir) else { return };
+        if signature != self.last_dir_signature {
+            self.last_dir_signature = signature;
+            self.reload_topics();
+        }
+    }
+
+    fn reload_topics(&mut self) {
+        let Ok(new_topics) = crate::assets::load_topics(&self.assets_dir) else { return };
+        let panel_positions: Vec<usize> = self.topics.iter().map(|t| t.current_panel).collect();
+
+        self.topics = new_topics;
+        for (topic, panel) in self.topics.iter_mut().zip(panel_positions) {
+            topic.current_panel = panel.min(topic.panels.len().saturating_sub(1));
+        }
+        self.current_topic = self.current_topic.min(self.topics.len().saturating_sub(1));
     }
 }
 
@@ -454,6 +485,8 @@ mod tests {
             joke_index: 0,
             joke_timer: Instant::now(),
             assets_dir: String::new(),
+            last_poll: Instant::now(),
+            last_dir_signature: (0, SystemTime::UNIX_EPOCH),
         }
     }
 
@@ -488,6 +521,8 @@ mod tests {
             joke_index: 0,
             joke_timer: Instant::now(),
             assets_dir: String::new(),
+            last_poll: Instant::now(),
+            last_dir_signature: (0, SystemTime::UNIX_EPOCH),
         }
     }
 
@@ -697,6 +732,8 @@ mod tests {
             joke_index: 0,
             joke_timer: Instant::now(),
             assets_dir: String::new(),
+            last_poll: Instant::now(),
+            last_dir_signature: (0, SystemTime::UNIX_EPOCH),
         }
     }
 
@@ -798,5 +835,98 @@ mod tests {
         app.tick();
         assert_eq!(app.screen, Screen::Topic);
         assert!(app.selected_lines.is_empty());
+    }
+
+    fn tempdir(suffix: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("present-app-test-{suffix}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cleanup(dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn write_panel(topic_dir: &std::path::Path, panel: &str, text: &str) {
+        let panel_dir = topic_dir.join(panel);
+        std::fs::create_dir_all(&panel_dir).unwrap();
+        std::fs::write(panel_dir.join("text.md"), text).unwrap();
+    }
+
+    #[test]
+    fn tick_reloads_topics_when_assets_dir_changes_after_poll_interval() {
+        let dir = tempdir("reload-on-change");
+        let topic_dir = dir.join("01-topic");
+        write_panel(&topic_dir, "1", "before");
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+        assert_eq!(app.topics[0].panels.len(), 1, "should start with one panel");
+
+        write_panel(&topic_dir, "2", "after");
+        app.last_poll = Instant::now() - std::time::Duration::from_secs(6);
+        app.tick();
+
+        assert_eq!(app.topics[0].panels.len(), 2, "should reload to pick up the new panel");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn tick_does_not_reload_before_poll_interval_elapses() {
+        let dir = tempdir("reload-too-soon");
+        let topic_dir = dir.join("01-topic");
+        write_panel(&topic_dir, "1", "before");
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+
+        write_panel(&topic_dir, "2", "after");
+        app.last_poll = Instant::now();
+        app.tick();
+
+        assert_eq!(app.topics[0].panels.len(), 1, "should not reload before the poll interval elapses");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn tick_does_not_reload_when_screen_is_not_topic() {
+        let dir = tempdir("reload-wrong-screen");
+        let topic_dir = dir.join("01-topic");
+        write_panel(&topic_dir, "1", "before");
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Intro;
+
+        write_panel(&topic_dir, "2", "after");
+        app.last_poll = Instant::now() - std::time::Duration::from_secs(6);
+        app.tick();
+
+        assert_eq!(app.topics[0].panels.len(), 1, "should not reload while off the Topic screen");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn tick_reload_preserves_current_topic_and_panel_position() {
+        let dir = tempdir("reload-preserves-position");
+        let topic_dir_0 = dir.join("01-topic");
+        write_panel(&topic_dir_0, "1", "a");
+        write_panel(&topic_dir_0, "2", "b");
+        let topic_dir_1 = dir.join("02-topic");
+        write_panel(&topic_dir_1, "1", "c");
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+        app.current_topic = 1;
+        app.topics[0].current_panel = 1;
+
+        write_panel(&topic_dir_1, "2", "d");
+        app.last_poll = Instant::now() - std::time::Duration::from_secs(6);
+        app.tick();
+
+        assert_eq!(app.current_topic, 1, "current topic should be preserved");
+        assert_eq!(app.topics[0].current_panel, 1, "other topics' panel position should be preserved");
+        assert_eq!(app.topics[1].panels.len(), 2, "should pick up the new panel");
+        cleanup(&dir);
     }
 }

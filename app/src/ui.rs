@@ -1,5 +1,5 @@
 use crate::app::{App, Screen};
-use crate::assets::{AssetKind, Panel};
+use crate::assets::{AssetKind, Panel, WordCloudSize};
 use crate::firework::{Firework, COLORS};
 use std::collections::HashSet;
 use ratatui::{
@@ -254,12 +254,12 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize, 
             render_prompt_asset(f, panel, rows[1], selected_line, selected_lines);
         }
         (true, false, false, true) => {
-            let sides = Layout::default()
-                .direction(Direction::Horizontal)
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(area);
-            render_text_asset(f, panel, sides[0]);
-            render_word_cloud_asset(f, panel, sides[1]);
+            render_text_asset(f, panel, rows[0]);
+            render_word_cloud_asset(f, panel, rows[1]);
         }
         (false, true, false, true) => {
             let sides = Layout::default()
@@ -338,9 +338,21 @@ fn render_text_asset(f: &mut Frame, panel: &Panel, area: Rect) {
     );
 }
 
+/// How many terminal cells wide each character is drawn, per word-cloud size tier.
+fn word_cloud_char_repeat(size: WordCloudSize) -> u16 {
+    match size {
+        WordCloudSize::Small | WordCloudSize::Medium => 1,
+        WordCloudSize::Large => 2,
+    }
+}
+
+fn word_cloud_is_bold(size: WordCloudSize) -> bool {
+    !matches!(size, WordCloudSize::Small)
+}
+
 fn render_word_cloud_asset(f: &mut Frame, panel: &Panel, area: Rect) {
     let Some(asset) = panel.word_cloud() else { return };
-    let AssetKind::WordCloud { title, words } = &asset.kind else { return };
+    let AssetKind::WordCloud { title, words, size } = &asset.kind else { return };
 
     f.render_widget(
         Block::default()
@@ -365,24 +377,34 @@ fn render_word_cloud_asset(f: &mut Frame, panel: &Panel, area: Rect) {
         return;
     }
 
+    let repeat = word_cloud_char_repeat(*size);
+    let bold = word_cloud_is_bold(*size);
     let buf = f.buffer_mut();
     let seed = cloud_seed(words);
 
     for (i, word) in words.iter().enumerate() {
         let wh = word_hash(word);
+        let footprint_width = word.chars().count() as u16 * repeat;
         let (raw_x, raw_y) = cloud_position(seed, wh, i, inner.width as u64, inner.height as u64);
-        let x = inner.x + (raw_x as u16).min(inner.width.saturating_sub(word.len() as u16));
+        let x = inner.x + (raw_x as u16).min(inner.width.saturating_sub(footprint_width));
         let y = inner.y + raw_y as u16;
 
         let color = CLOUD_COLORS[(wh as usize) % CLOUD_COLORS.len()];
+        let style = if bold {
+            Style::default().fg(color).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(color)
+        };
 
         for (col, ch) in word.chars().enumerate() {
-            let cx = x + col as u16;
-            if cx < inner.x + inner.width {
-                if let Some(cell) = buf.cell_mut((cx, y)) {
-                    cell.set_char(ch);
-                    cell.set_fg(color);
-                    cell.set_diff_option(ratatui::buffer::CellDiffOption::None);
+            for r in 0..repeat {
+                let cx = x + col as u16 * repeat + r;
+                if cx < inner.x + inner.width {
+                    if let Some(cell) = buf.cell_mut((cx, y)) {
+                        cell.set_char(ch);
+                        cell.set_style(style);
+                        cell.set_diff_option(ratatui::buffer::CellDiffOption::None);
+                    }
                 }
             }
         }
@@ -680,6 +702,135 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::Asset;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::path::PathBuf;
+
+    fn text_and_word_cloud_panel(text: &str, cloud_title: &str, words: &[&str]) -> Panel {
+        word_cloud_panel_with_size(text, cloud_title, words, WordCloudSize::default())
+    }
+
+    fn word_cloud_panel_with_size(text: &str, cloud_title: &str, words: &[&str], size: WordCloudSize) -> Panel {
+        let text_asset = Asset {
+            path: PathBuf::from("text.md"),
+            kind: AssetKind::Text { content: text.to_string() },
+        };
+        let cloud_asset = Asset {
+            path: PathBuf::from("word-cloud.md"),
+            kind: AssetKind::WordCloud {
+                title: cloud_title.to_string(),
+                words: words.iter().map(|w| w.to_string()).collect(),
+                size,
+            },
+        };
+        Panel { assets: vec![text_asset, cloud_asset] }
+    }
+
+    fn row_text(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn text_and_word_cloud_stack_vertically_with_text_on_top() {
+        let panel = text_and_word_cloud_panel("Panel body text", "My Cloud", &["alpha"]);
+        let height = 20u16;
+        let backend = TestBackend::new(60, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let selected_lines = HashSet::new();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_panel(f, &panel, area, 0, &selected_lines);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let top_row = row_text(buffer, 0);
+        assert!(
+            !top_row.contains("My Cloud"),
+            "word cloud title should not be on the very top row when stacked with text: {top_row}"
+        );
+
+        let bottom_start = height / 2;
+        let found_in_bottom = (bottom_start..height).any(|y| row_text(buffer, y).contains("My Cloud"));
+        assert!(found_in_bottom, "word cloud title should appear in the bottom half of the panel");
+
+        let found_text_in_top = (0..bottom_start).any(|y| row_text(buffer, y).contains("Panel body text"));
+        assert!(found_text_in_top, "text content should appear in the top half of the panel");
+    }
+
+    fn single_word_cloud_panel(word: &str, size: WordCloudSize) -> Panel {
+        let cloud_asset = Asset {
+            path: PathBuf::from("word-cloud.md"),
+            kind: AssetKind::WordCloud {
+                title: "Cloud".to_string(),
+                words: vec![word.to_string()],
+                size,
+            },
+        };
+        Panel { assets: vec![cloud_asset] }
+    }
+
+    fn render_word_cloud_to_buffer(panel: &Panel) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(40, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_word_cloud_asset(f, panel, area);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn count_symbol(buffer: &ratatui::buffer::Buffer, symbol: &str) -> usize {
+        (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| buffer.cell((x, y)).map(|c| c.symbol() == symbol).unwrap_or(false))
+            .count()
+    }
+
+    fn all_symbol_cells_bold(buffer: &ratatui::buffer::Buffer, symbol: &str) -> bool {
+        (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| buffer.cell((x, y)).map(|c| c.symbol() == symbol).unwrap_or(false))
+            .all(|(x, y)| {
+                buffer
+                    .cell((x, y))
+                    .map(|c| c.modifier.contains(Modifier::BOLD))
+                    .unwrap_or(false)
+            })
+    }
+
+    #[test]
+    fn small_word_cloud_renders_single_width_unbold() {
+        let panel = single_word_cloud_panel("hi", WordCloudSize::Small);
+        let buffer = render_word_cloud_to_buffer(&panel);
+        assert_eq!(count_symbol(&buffer, "h"), 1);
+        assert_eq!(count_symbol(&buffer, "i"), 1);
+        assert!(!all_symbol_cells_bold(&buffer, "h"), "small word cloud should not be bold");
+    }
+
+    #[test]
+    fn medium_word_cloud_renders_single_width_bold() {
+        let panel = single_word_cloud_panel("hi", WordCloudSize::Medium);
+        let buffer = render_word_cloud_to_buffer(&panel);
+        assert_eq!(count_symbol(&buffer, "h"), 1);
+        assert_eq!(count_symbol(&buffer, "i"), 1);
+        assert!(all_symbol_cells_bold(&buffer, "h"), "medium word cloud should be bold");
+    }
+
+    #[test]
+    fn large_word_cloud_renders_double_width_bold() {
+        let panel = single_word_cloud_panel("hi", WordCloudSize::Large);
+        let buffer = render_word_cloud_to_buffer(&panel);
+        assert_eq!(count_symbol(&buffer, "h"), 2, "each character should be doubled for a large cloud");
+        assert_eq!(count_symbol(&buffer, "i"), 2, "each character should be doubled for a large cloud");
+        assert!(all_symbol_cells_bold(&buffer, "h"), "large word cloud should be bold");
+    }
 
     #[test]
     fn word_hash_is_deterministic() {

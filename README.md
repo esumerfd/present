@@ -88,6 +88,23 @@ graph TD
     B --> C[End]
 ```
 
+### `word-cloud.md` — Word cloud
+
+A scattered word cloud rendered in the panel. When paired with a `text.md` in the same panel, the text is shown on top and the word cloud below.
+
+```markdown
+---
+size: large
+---
+# Rust Concepts
+
+ownership
+borrowing
+lifetimes
+```
+
+The first heading becomes the cloud's title; each remaining non-blank line becomes one word. The optional `---`-delimited front matter accepts a `size` of `small`, `medium` (default), or `large`.
+
 ## Navigation
 
 | Key | Action |

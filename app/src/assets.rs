@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
 pub struct Topic {
@@ -62,6 +63,14 @@ pub struct Asset {
     pub kind: AssetKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WordCloudSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
 #[derive(Debug, Clone)]
 pub enum AssetKind {
     Prompt {
@@ -78,10 +87,44 @@ pub enum AssetKind {
     WordCloud {
         title: String,
         words: Vec<String>,
+        size: WordCloudSize,
     },
     Image {
         image: image::DynamicImage,
     },
+}
+
+/// A cheap fingerprint of an assets directory: total file count and the
+/// most recent modification time, walked recursively. Used to detect when
+/// the directory has changed on disk without re-parsing its contents.
+pub fn dir_signature(assets_dir: &str) -> Result<(usize, SystemTime)> {
+    let path = Path::new(assets_dir);
+    if !path.exists() {
+        return Ok((0, SystemTime::UNIX_EPOCH));
+    }
+    let mut count = 0usize;
+    let mut latest = SystemTime::UNIX_EPOCH;
+    walk_dir_signature(path, &mut count, &mut latest)?;
+    Ok((count, latest))
+}
+
+fn walk_dir_signature(dir: &Path, count: &mut usize, latest: &mut SystemTime) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            walk_dir_signature(&path, count, latest)?;
+        } else {
+            *count += 1;
+            if let Ok(modified) = metadata.modified() {
+                if modified > *latest {
+                    *latest = modified;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn load_topics(assets_dir: &str) -> Result<Vec<Topic>> {
@@ -151,9 +194,11 @@ fn load_panels(topic_path: &Path) -> Result<Vec<Panel>> {
         let word_cloud_file = dir.join("word-cloud.md");
         if word_cloud_file.exists() {
             let raw = fs::read_to_string(&word_cloud_file)?;
-            let title = extract_label(&raw);
-            let words = parse_word_cloud_words(&raw);
-            assets.push(Asset { path: word_cloud_file, kind: AssetKind::WordCloud { title, words } });
+            let (front_matter, body) = split_front_matter(&raw);
+            let title = extract_label(body);
+            let words = parse_word_cloud_words(body);
+            let size = parse_word_cloud_size(front_matter);
+            assets.push(Asset { path: word_cloud_file, kind: AssetKind::WordCloud { title, words, size } });
         }
 
         for ext in &["jpg", "jpeg", "png"] {
@@ -275,6 +320,7 @@ mod tests {
             kind: AssetKind::WordCloud {
                 title: "Test".into(),
                 words: vec!["foo".into()],
+                size: WordCloudSize::default(),
             },
         };
         let panel = Panel { assets: vec![cloud] };
@@ -298,11 +344,143 @@ mod tests {
             kind: AssetKind::WordCloud {
                 title: "Cloud".into(),
                 words: vec!["rust".into()],
+                size: WordCloudSize::default(),
             },
         };
         let panel = Panel { assets: vec![cloud] };
         let asset = panel.word_cloud().expect("should find word cloud");
         assert!(matches!(asset.kind, AssetKind::WordCloud { .. }));
+    }
+
+    fn tempdir(suffix: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("present-assets-test-{suffix}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cleanup(dir: &Path) {
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dir_signature_same_for_unchanged_directory() {
+        let dir = tempdir("sig-unchanged");
+        fs::write(dir.join("text.md"), "hello").unwrap();
+
+        let first = dir_signature(dir.to_str().unwrap()).unwrap();
+        let second = dir_signature(dir.to_str().unwrap()).unwrap();
+        assert_eq!(first, second);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn dir_signature_changes_when_file_added() {
+        let dir = tempdir("sig-file-added");
+        fs::write(dir.join("text.md"), "hello").unwrap();
+        let before = dir_signature(dir.to_str().unwrap()).unwrap();
+
+        fs::write(dir.join("prompt.md"), "a new file").unwrap();
+        let after = dir_signature(dir.to_str().unwrap()).unwrap();
+
+        assert_ne!(before, after, "signature should change when a file is added");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn dir_signature_sees_files_in_nested_topic_and_panel_dirs() {
+        let dir = tempdir("sig-nested");
+        let panel_dir = dir.join("01-topic").join("1");
+        fs::create_dir_all(&panel_dir).unwrap();
+        fs::write(panel_dir.join("text.md"), "hello").unwrap();
+        let before = dir_signature(dir.to_str().unwrap()).unwrap();
+
+        fs::write(panel_dir.join("prompt.md"), "a new nested file").unwrap();
+        let after = dir_signature(dir.to_str().unwrap()).unwrap();
+
+        assert_ne!(before, after, "signature should detect changes in nested topic/panel dirs");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn dir_signature_is_zero_for_missing_directory() {
+        let sig = dir_signature("/nonexistent-assets-dir-xyz").unwrap();
+        assert_eq!(sig, (0, std::time::SystemTime::UNIX_EPOCH));
+    }
+
+    #[test]
+    fn split_front_matter_returns_none_when_absent() {
+        let content = "# My Cloud\n\nownership\nborrowing\n";
+        let (front, body) = split_front_matter(content);
+        assert!(front.is_none());
+        assert_eq!(body, content);
+    }
+
+    #[test]
+    fn split_front_matter_extracts_block_and_strips_it_from_body() {
+        let content = "---\nsize: large\n---\n# My Cloud\n\nownership\n";
+        let (front, body) = split_front_matter(content);
+        assert_eq!(front, Some("size: large"));
+        assert!(!body.contains("size: large"));
+        assert!(body.trim_start().starts_with("# My Cloud"), "body was: {body:?}");
+    }
+
+    #[test]
+    fn parse_word_cloud_size_defaults_to_medium_when_front_matter_absent() {
+        assert_eq!(parse_word_cloud_size(None), WordCloudSize::Medium);
+    }
+
+    #[test]
+    fn parse_word_cloud_size_parses_large() {
+        assert_eq!(parse_word_cloud_size(Some("size: large")), WordCloudSize::Large);
+    }
+
+    #[test]
+    fn parse_word_cloud_size_parses_small_case_insensitively() {
+        assert_eq!(parse_word_cloud_size(Some("SIZE: Small")), WordCloudSize::Small);
+    }
+
+    #[test]
+    fn parse_word_cloud_size_falls_back_to_medium_for_unknown_value() {
+        assert_eq!(parse_word_cloud_size(Some("size: gigantic")), WordCloudSize::Medium);
+    }
+
+    #[test]
+    fn load_topics_parses_word_cloud_size_from_front_matter() {
+        let dir = tempdir("wordcloud-size");
+        let panel_dir = dir.join("01-topic").join("1");
+        fs::create_dir_all(&panel_dir).unwrap();
+        fs::write(
+            panel_dir.join("word-cloud.md"),
+            "---\nsize: large\n---\n# My Cloud\n\nownership\nborrowing\n",
+        )
+        .unwrap();
+
+        let topics = load_topics(dir.to_str().unwrap()).unwrap();
+        let asset = topics[0].panels[0].word_cloud().expect("should find word cloud");
+        let AssetKind::WordCloud { title, words, size } = &asset.kind else {
+            panic!("expected WordCloud asset");
+        };
+        assert_eq!(title, "My Cloud");
+        assert_eq!(words, &vec!["ownership".to_string(), "borrowing".to_string()]);
+        assert_eq!(*size, WordCloudSize::Large);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn load_topics_defaults_word_cloud_size_to_medium_without_front_matter() {
+        let dir = tempdir("wordcloud-size-default");
+        let panel_dir = dir.join("01-topic").join("1");
+        fs::create_dir_all(&panel_dir).unwrap();
+        fs::write(panel_dir.join("word-cloud.md"), "# My Cloud\n\nownership\n").unwrap();
+
+        let topics = load_topics(dir.to_str().unwrap()).unwrap();
+        let asset = topics[0].panels[0].word_cloud().expect("should find word cloud");
+        let AssetKind::WordCloud { size, .. } = &asset.kind else {
+            panic!("expected WordCloud asset");
+        };
+        assert_eq!(*size, WordCloudSize::Medium);
+        cleanup(&dir);
     }
 }
 
@@ -319,6 +497,38 @@ fn extract_label(content: &str) -> String {
         }
     }
     "untitled".to_string()
+}
+
+/// Splits a leading `---`-delimited front matter block off the given content,
+/// returning the front matter's inner text (without the delimiters) and the
+/// remaining body. Returns `None` for the front matter when no such block is present.
+fn split_front_matter(content: &str) -> (Option<&str>, &str) {
+    let Some(rest) = content.strip_prefix("---\n") else {
+        return (None, content);
+    };
+    let Some(end) = rest.find("\n---") else {
+        return (None, content);
+    };
+    let front_matter = &rest[..end];
+    let after = &rest[end + "\n---".len()..];
+    let body = after.strip_prefix('\n').unwrap_or(after);
+    (Some(front_matter), body)
+}
+
+fn parse_word_cloud_size(front_matter: Option<&str>) -> WordCloudSize {
+    let Some(front_matter) = front_matter else { return WordCloudSize::default() };
+    for line in front_matter.lines() {
+        let Some((key, value)) = line.split_once(':') else { continue };
+        if !key.trim().eq_ignore_ascii_case("size") {
+            continue;
+        }
+        return match value.trim().to_ascii_lowercase().as_str() {
+            "small" => WordCloudSize::Small,
+            "large" => WordCloudSize::Large,
+            _ => WordCloudSize::default(),
+        };
+    }
+    WordCloudSize::default()
 }
 
 fn parse_word_cloud_words(content: &str) -> Vec<String> {
