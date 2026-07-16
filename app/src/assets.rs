@@ -54,6 +54,10 @@ impl Panel {
     pub fn has_image(&self) -> bool {
         self.assets.iter().any(|a| matches!(a.kind, AssetKind::Image { .. }))
     }
+
+    pub fn notes(&self) -> Option<&Asset> {
+        self.assets.iter().find(|a| matches!(a.kind, AssetKind::Notes { .. }))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +95,9 @@ pub enum AssetKind {
     },
     Image {
         image: image::DynamicImage,
+    },
+    Notes {
+        content: String,
     },
 }
 
@@ -173,6 +180,7 @@ fn load_panels(topic_path: &Path) -> Result<Vec<Panel>> {
         let prompt_file  = dir.join("prompt.md");
         let diagram_file = dir.join("diagram.md");
         let text_file    = dir.join("text.md");
+        let notes_file   = dir.join("notes.md");
 
         if prompt_file.exists() {
             let raw = fs::read_to_string(&prompt_file)?;
@@ -190,6 +198,10 @@ fn load_panels(topic_path: &Path) -> Result<Vec<Panel>> {
         if text_file.exists() {
             let content = fs::read_to_string(&text_file)?;
             assets.push(Asset { path: text_file, kind: AssetKind::Text { content } });
+        }
+        if notes_file.exists() {
+            let content = fs::read_to_string(&notes_file)?;
+            assets.push(Asset { path: notes_file, kind: AssetKind::Notes { content } });
         }
         let word_cloud_file = dir.join("word-cloud.md");
         if word_cloud_file.exists() {
@@ -480,6 +492,59 @@ mod tests {
             panic!("expected WordCloud asset");
         };
         assert_eq!(*size, WordCloudSize::Medium);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn notes_returns_none_when_absent() {
+        let text = Asset {
+            path: PathBuf::from("text.md"),
+            kind: AssetKind::Text { content: "hello".into() },
+        };
+        let panel = Panel { assets: vec![text] };
+        assert!(panel.notes().is_none());
+    }
+
+    #[test]
+    fn notes_returns_the_asset() {
+        let notes = Asset {
+            path: PathBuf::from("notes.md"),
+            kind: AssetKind::Notes { content: "remember to breathe".into() },
+        };
+        let panel = Panel { assets: vec![notes] };
+        let found = panel.notes().expect("should find notes asset");
+        assert!(matches!(found.kind, AssetKind::Notes { .. }));
+    }
+
+    #[test]
+    fn notes_md_loads_into_notes_asset_kind() {
+        let dir = tempdir("notes-load");
+        let panel_dir = dir.join("01-topic").join("1");
+        fs::create_dir_all(&panel_dir).unwrap();
+        fs::write(panel_dir.join("notes.md"), "Slow down on this slide.\n").unwrap();
+
+        let topics = load_topics(dir.to_str().unwrap()).unwrap();
+        let asset = topics[0].panels[0].notes().expect("should find notes asset");
+        let AssetKind::Notes { content } = &asset.kind else {
+            panic!("expected Notes asset");
+        };
+        assert_eq!(content, "Slow down on this slide.\n");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn panels_without_notes_md_still_load_other_assets() {
+        let dir = tempdir("notes-absent-regression");
+        let panel_dir = dir.join("01-topic").join("1");
+        fs::create_dir_all(&panel_dir).unwrap();
+        fs::write(panel_dir.join("text.md"), "hello").unwrap();
+        fs::write(panel_dir.join("prompt.md"), "# Label\n\ndo the thing").unwrap();
+
+        let topics = load_topics(dir.to_str().unwrap()).unwrap();
+        let panel = &topics[0].panels[0];
+        assert!(panel.notes().is_none());
+        assert!(panel.has_prompt());
+        assert!(panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Text { .. })));
         cleanup(&dir);
     }
 }

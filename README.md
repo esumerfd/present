@@ -33,6 +33,21 @@ Then run it with the included demo assets:
 present assets/demo
 ```
 
+### Presenter notes on a second monitor
+
+Run a second, small window showing the current panel's speaker notes —
+open it in a second terminal window and drag that window to your other
+display:
+
+```bash
+present --notes assets/demo
+```
+
+It mirrors whatever topic/panel is live in the main window (updating
+within a fraction of a second) and shows that panel's `notes.md`
+content. Press `q` in the notes window to quit it independently of the
+main presentation.
+
 ## Asset Directory Structure
 
 ```
@@ -104,6 +119,14 @@ lifetimes
 ```
 
 The first heading becomes the cloud's title; each remaining non-blank line becomes one word. The optional `---`-delimited front matter accepts a `size` of `small`, `medium` (default), or `large`.
+
+### `notes.md` — Presenter notes
+
+Speaker notes for this panel, shown only in the `--notes` second-monitor window (see [Presenter notes on a second monitor](#presenter-notes-on-a-second-monitor)) — never on the main audience-facing screen.
+
+```markdown
+Slow down here. Make eye contact before advancing.
+```
 
 ## Navigation
 

@@ -1,6 +1,7 @@
 use crate::app::{App, Screen};
 use crate::assets::{AssetKind, Panel, WordCloudSize};
 use crate::firework::{Firework, COLORS};
+use crate::notes::NotesApp;
 use std::collections::HashSet;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -183,6 +184,59 @@ fn render_topic(f: &mut Frame, app: &App) {
     if let Some(fw) = &app.firework {
         render_firework(f, fw, area);
     }
+}
+
+pub fn render_notes(f: &mut Frame, app: &NotesApp) {
+    let area = f.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(4), Constraint::Length(3)])
+        .split(area);
+
+    let topic_label = app.current_topic_label().unwrap_or("(no topic)");
+    let panel_number = app.current_panel.saturating_add(1);
+    let panel_total = app
+        .topics
+        .get(app.current_topic)
+        .map(|t| t.panels.len())
+        .unwrap_or(0);
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            format!(" {topic_label} — Panel {panel_number} of {panel_total}"),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ))
+        .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray))),
+        chunks[0],
+    );
+
+    let notes_content = app
+        .current_panel()
+        .and_then(|p| p.notes())
+        .and_then(|a| match &a.kind {
+            AssetKind::Notes { content } => Some(content.clone()),
+            _ => None,
+        });
+    let body = match notes_content {
+        Some(content) => Paragraph::new(crate::markdown::render_to_lines(&content)),
+        None => Paragraph::new(Span::styled(
+            "(no notes for this panel)",
+            Style::default().fg(Color::DarkGray),
+        )),
+    };
+    f.render_widget(
+        body.block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)))
+            .wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            " q: quit",
+            Style::default().fg(Color::DarkGray),
+        ))
+        .block(Block::default().borders(Borders::TOP).border_style(Style::default().fg(Color::DarkGray))),
+        chunks[2],
+    );
 }
 
 fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize, selected_lines: &HashSet<usize>) {

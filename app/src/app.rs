@@ -856,6 +856,7 @@ mod tests {
 
     #[test]
     fn tick_reloads_topics_when_assets_dir_changes_after_poll_interval() {
+        let _guard = crate::state::test_lock();
         let dir = tempdir("reload-on-change");
         let topic_dir = dir.join("01-topic");
         write_panel(&topic_dir, "1", "before");
@@ -874,6 +875,7 @@ mod tests {
 
     #[test]
     fn tick_does_not_reload_before_poll_interval_elapses() {
+        let _guard = crate::state::test_lock();
         let dir = tempdir("reload-too-soon");
         let topic_dir = dir.join("01-topic");
         write_panel(&topic_dir, "1", "before");
@@ -891,6 +893,7 @@ mod tests {
 
     #[test]
     fn tick_does_not_reload_when_screen_is_not_topic() {
+        let _guard = crate::state::test_lock();
         let dir = tempdir("reload-wrong-screen");
         let topic_dir = dir.join("01-topic");
         write_panel(&topic_dir, "1", "before");
@@ -908,6 +911,7 @@ mod tests {
 
     #[test]
     fn tick_reload_preserves_current_topic_and_panel_position() {
+        let _guard = crate::state::test_lock();
         let dir = tempdir("reload-preserves-position");
         let topic_dir_0 = dir.join("01-topic");
         write_panel(&topic_dir_0, "1", "a");

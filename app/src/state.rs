@@ -6,6 +6,18 @@ use std::path::Path;
 
 const STATE_FILE: &str = "/tmp/present-state.json";
 
+/// Serializes tests that exercise the real, shared STATE_FILE (via
+/// `save_state`/`load_state`/`App::new`/`NotesApp::new`) so parallel test
+/// threads don't lose each other's writes in the read-modify-write cycle
+/// below. Tests using a private per-test file (`save_state_to` etc.) don't
+/// need this.
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresentationState {
     pub current_topic: usize,

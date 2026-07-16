@@ -5,13 +5,14 @@ mod export;
 mod firework;
 mod markdown;
 mod mermaid;
+mod notes;
 mod state;
 mod ui;
 
 use anyhow::Result;
 use app::App;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -22,6 +23,7 @@ enum Args {
     Help,
     Version,
     Export { assets_dir: String, output: String },
+    Notes { assets_dir: String },
     Run { assets_dir: String, reset: bool },
 }
 
@@ -36,6 +38,7 @@ fn parse_args(args: Vec<String>) -> Args {
     let mut assets_dir: Option<String> = None;
     let mut export_output: Option<String> = None;
     let mut reset = false;
+    let mut notes = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -46,6 +49,10 @@ fn parse_args(args: Vec<String>) -> Args {
             }
             "--reset" => {
                 reset = true;
+                i += 1;
+            }
+            "--notes" => {
+                notes = true;
                 i += 1;
             }
             other => {
@@ -59,6 +66,9 @@ fn parse_args(args: Vec<String>) -> Args {
 
     let assets_dir = assets_dir.unwrap_or_else(|| "assets".to_string());
 
+    if notes {
+        return Args::Notes { assets_dir };
+    }
     if let Some(output) = export_output {
         return Args::Export { assets_dir, output };
     }
@@ -74,6 +84,7 @@ Arguments:
 Options:
   --export <FILE>      Export all topic text and prompts to a file and exit
   --reset              Clear saved position and start from the beginning
+  --notes              Run as a presenter-notes display (second monitor)
   -h, --help           Print help
   -v, --version        Print version
 "
@@ -94,6 +105,7 @@ fn main() -> Result<()> {
             println!("Exported to {output}");
             Ok(())
         }
+        Args::Notes { assets_dir } => run_notes(&assets_dir),
         Args::Run { assets_dir, reset } => run(&assets_dir, reset),
     }
 }
@@ -120,6 +132,45 @@ fn run(assets_dir: &str, reset: bool) -> Result<()> {
     terminal.show_cursor()?;
 
     result
+}
+
+fn run_notes(assets_dir: &str) -> Result<()> {
+    let mut app = notes::NotesApp::new(assets_dir)?;
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    let result = run_notes_app(&mut terminal, &mut app);
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    result
+}
+
+fn run_notes_app<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut notes::NotesApp,
+) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    loop {
+        terminal.draw(|f| ui::render_notes(f, app))?;
+
+        if event::poll(Duration::from_millis(150))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
+                    return Ok(());
+                }
+            }
+        }
+
+        app.tick();
+    }
 }
 
 fn run_app<B: ratatui::backend::Backend>(
@@ -249,5 +300,29 @@ mod tests {
         };
         assert_eq!(assets_dir, "/tmp");
         assert!(reset);
+    }
+
+    #[test]
+    fn notes_flag_parses_to_notes_variant() {
+        let args = vec!["--notes".to_string()];
+        assert!(matches!(parse_args(args), Args::Notes { .. }));
+    }
+
+    #[test]
+    fn notes_flag_uses_default_assets_dir() {
+        let args = vec!["--notes".to_string()];
+        let Args::Notes { assets_dir } = parse_args(args) else {
+            panic!("expected Notes variant");
+        };
+        assert_eq!(assets_dir, "assets");
+    }
+
+    #[test]
+    fn notes_flag_combines_with_assets_dir() {
+        let args = vec!["/tmp".to_string(), "--notes".to_string()];
+        let Args::Notes { assets_dir } = parse_args(args) else {
+            panic!("expected Notes variant");
+        };
+        assert_eq!(assets_dir, "/tmp");
     }
 }
