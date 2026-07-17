@@ -1254,6 +1254,7 @@ name = "present"
 version = "1.2.3"
 dependencies = [
  "anyhow",
+ "base64",
  "crossterm 0.28.1",
  "font8x8",
  "image",

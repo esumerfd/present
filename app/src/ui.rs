@@ -48,23 +48,97 @@ fn cloud_position(seed: u64, wh: u64, index: usize, width: u64, height: u64) -> 
     (raw_x, raw_y)
 }
 
+const MAX_PLACEMENT_ATTEMPTS: u64 = 32;
+const WORD_PADDING: u16 = 1;
+
+struct PlacedWord {
+    word: String,
+    /// Draw origin (inset by `WORD_PADDING`), relative to the inner area's top-left corner.
+    x: u16,
+    y: u16,
+}
+
+/// Places words one at a time, in list order, retrying each word's candidate position
+/// (up to `MAX_PLACEMENT_ATTEMPTS` times) until it finds one that doesn't overlap any
+/// already-placed word. A word that finds no free spot is dropped rather than rendered
+/// on top of another word. Deterministic: the same words + area always place the same way.
+fn place_words(words: &[String], repeat: u16, inner_width: u16, inner_height: u16) -> Vec<PlacedWord> {
+    let seed = cloud_seed(words);
+    let mut placed_rects: Vec<Rect> = Vec::new();
+    let mut result = Vec::new();
+
+    for (i, word) in words.iter().enumerate() {
+        let wh = word_hash(word);
+        let footprint_w = word.chars().count() as u16 * repeat + WORD_PADDING * 2;
+        let footprint_h = 1 + WORD_PADDING * 2;
+        if footprint_w > inner_width || footprint_h > inner_height {
+            continue;
+        }
+
+        let x_range = (inner_width - footprint_w + 1) as u64;
+        let y_range = (inner_height - footprint_h + 1) as u64;
+
+        let mut chosen = None;
+        for attempt in 0..MAX_PLACEMENT_ATTEMPTS {
+            let (raw_x, raw_y) = cloud_position(seed, wh.wrapping_add(attempt), i, x_range, y_range);
+            let candidate = Rect {
+                x: raw_x as u16,
+                y: raw_y as u16,
+                width: footprint_w,
+                height: footprint_h,
+            };
+            if !placed_rects.iter().any(|r| r.intersects(candidate)) {
+                chosen = Some(candidate);
+                break;
+            }
+        }
+
+        if let Some(rect) = chosen {
+            result.push(PlacedWord {
+                word: word.clone(),
+                x: rect.x + WORD_PADDING,
+                y: rect.y + WORD_PADDING,
+            });
+            placed_rects.push(rect);
+        }
+    }
+
+    result
+}
 
 
-pub fn render(f: &mut Frame, app: &App) {
+
+/// An image asset that couldn't be drawn through ratatui's own cell buffer and instead
+/// needs a raw terminal-graphics-protocol escape sequence written directly to the real
+/// terminal, positioned at (x, y) in terminal cells relative to the frame's origin.
+pub struct PendingImage {
+    pub x: u16,
+    pub y: u16,
+    pub escape: String,
+}
+
+pub fn render(f: &mut Frame, app: &App) -> Option<PendingImage> {
+    let iterm2_supported = crate::iterm2::detect_support();
     match app.screen {
-        Screen::Intro => render_intro(f, app),
-        Screen::Topic => render_topic(f, app),
+        Screen::Intro => {
+            render_intro(f, app);
+            None
+        }
+        Screen::Topic => render_topic(f, app, iterm2_supported),
         Screen::Help => {
-            render_topic(f, app);
+            let pending = render_topic(f, app, iterm2_supported);
             render_help(f);
+            pending
         }
         Screen::Confirm => {
-            render_topic(f, app);
+            let pending = render_topic(f, app, iterm2_supported);
             render_confirm(f, app);
+            pending
         }
         Screen::Countdown => {
-            render_topic(f, app);
+            let pending = render_topic(f, app, iterm2_supported);
             render_countdown(f, app);
+            pending
         }
     }
 }
@@ -159,9 +233,9 @@ fn render_scaled_name(f: &mut Frame, text: &str, scale: usize, style: Style, are
     f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
 }
 
-fn render_topic(f: &mut Frame, app: &App) {
+fn render_topic(f: &mut Frame, app: &App, iterm2_supported: bool) -> Option<PendingImage> {
     let area = f.area();
-    let Some(topic) = app.topics.get(app.current_topic) else { return };
+    let topic = app.topics.get(app.current_topic)?;
     let has_prompt = topic.current_panel().map(|p| p.has_prompt()).unwrap_or(false);
 
     let chunks = Layout::default()
@@ -175,15 +249,17 @@ fn render_topic(f: &mut Frame, app: &App) {
 
     render_header(f, app, chunks[0]);
 
-    if let Some(panel) = topic.current_panel() {
-        render_panel(f, panel, chunks[1], app.selected_line, &app.selected_lines);
-    }
+    let pending = topic.current_panel().and_then(|panel| {
+        render_panel(f, panel, chunks[1], app.selected_line, &app.selected_lines, iterm2_supported)
+    });
 
     render_status(f, app, has_prompt, chunks[2]);
 
     if let Some(fw) = &app.firework {
         render_firework(f, fw, area);
     }
+
+    pending
 }
 
 pub fn render_notes(f: &mut Frame, app: &NotesApp) {
@@ -239,7 +315,14 @@ pub fn render_notes(f: &mut Frame, app: &NotesApp) {
     );
 }
 
-fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize, selected_lines: &HashSet<usize>) {
+fn render_panel(
+    f: &mut Frame,
+    panel: &Panel,
+    area: Rect,
+    selected_line: usize,
+    selected_lines: &HashSet<usize>,
+    iterm2_supported: bool,
+) -> Option<PendingImage> {
     let has_text       = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Text { .. }));
     let has_diagram    = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Diagram { .. }));
     let has_prompt     = panel.has_prompt();
@@ -247,26 +330,25 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize, 
     let has_image      = panel.has_image();
 
     if has_image && !has_text && !has_diagram && !has_word_cloud && !has_prompt {
-        render_image_asset(f, panel, area);
-        return;
+        return render_image_asset(f, panel, area, iterm2_supported);
     }
     if has_image && has_prompt && !has_text && !has_diagram && !has_word_cloud {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
             .split(area);
-        render_image_asset(f, panel, rows[0]);
+        let pending = render_image_asset(f, panel, rows[0], iterm2_supported);
         render_prompt_asset(f, panel, rows[1], selected_line, selected_lines);
-        return;
+        return pending;
     }
     if has_image && has_text && !has_prompt && !has_diagram && !has_word_cloud {
         let sides = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
-        render_image_asset(f, panel, sides[0]);
+        let pending = render_image_asset(f, panel, sides[0], iterm2_supported);
         render_text_asset(f, panel, sides[1]);
-        return;
+        return pending;
     }
 
     match (has_text, has_diagram, has_prompt, has_word_cloud) {
@@ -337,15 +419,28 @@ fn render_panel(f: &mut Frame, panel: &Panel, area: Rect, selected_line: usize, 
             );
         }
     }
+    None
 }
 
-fn render_image_asset(f: &mut Frame, panel: &Panel, area: Rect) {
+fn render_image_asset(f: &mut Frame, panel: &Panel, area: Rect, iterm2_supported: bool) -> Option<PendingImage> {
     use crate::assets::AssetKind;
-    let Some(asset) = panel.image() else { return };
-    let AssetKind::Image { image } = &asset.kind else { return };
+    let asset = panel.image()?;
+    let AssetKind::Image { image } = &asset.kind else { return None };
 
     if area.width == 0 || area.height == 0 {
-        return;
+        return None;
+    }
+
+    if iterm2_supported {
+        // Leave ratatui's own buffer untouched here — the real pixels are painted
+        // out-of-band via a raw OSC 1337 escape sequence after this frame is flushed,
+        // so ratatui must never write into this Rect (it would fight with the image).
+        let png_bytes = match crate::iterm2::encode_png(image) {
+            Ok(bytes) => bytes,
+            Err(_) => return None,
+        };
+        let escape = crate::iterm2::image_escape_sequence(&png_bytes, area.width, area.height);
+        return Some(PendingImage { x: area.x, y: area.y, escape });
     }
 
     let target_w = area.width as u32;
@@ -378,6 +473,7 @@ fn render_image_asset(f: &mut Frame, panel: &Panel, area: Rect) {
     }
 
     f.render_widget(Paragraph::new(lines), area);
+    None
 }
 
 fn render_text_asset(f: &mut Frame, panel: &Panel, area: Rect) {
@@ -434,14 +530,11 @@ fn render_word_cloud_asset(f: &mut Frame, panel: &Panel, area: Rect) {
     let repeat = word_cloud_char_repeat(*size);
     let bold = word_cloud_is_bold(*size);
     let buf = f.buffer_mut();
-    let seed = cloud_seed(words);
 
-    for (i, word) in words.iter().enumerate() {
-        let wh = word_hash(word);
-        let footprint_width = word.chars().count() as u16 * repeat;
-        let (raw_x, raw_y) = cloud_position(seed, wh, i, inner.width as u64, inner.height as u64);
-        let x = inner.x + (raw_x as u16).min(inner.width.saturating_sub(footprint_width));
-        let y = inner.y + raw_y as u16;
+    for placed in place_words(words, repeat, inner.width, inner.height) {
+        let wh = word_hash(&placed.word);
+        let x = inner.x + placed.x;
+        let y = inner.y + placed.y;
 
         let color = CLOUD_COLORS[(wh as usize) % CLOUD_COLORS.len()];
         let style = if bold {
@@ -450,7 +543,7 @@ fn render_word_cloud_asset(f: &mut Frame, panel: &Panel, area: Rect) {
             Style::default().fg(color)
         };
 
-        for (col, ch) in word.chars().enumerate() {
+        for (col, ch) in placed.word.chars().enumerate() {
             for r in 0..repeat {
                 let cx = x + col as u16 * repeat + r;
                 if cx < inner.x + inner.width {
@@ -787,6 +880,105 @@ mod tests {
             .collect()
     }
 
+    fn image_only_panel() -> Panel {
+        use image::{DynamicImage, ImageBuffer, Rgb};
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_fn(4, 4, |_, _| Rgb([200, 100, 50])));
+        let asset = Asset {
+            path: PathBuf::from("image.png"),
+            kind: AssetKind::Image { image: img },
+        };
+        Panel { assets: vec![asset] }
+    }
+
+    fn text_only_panel(content: &str) -> Panel {
+        let asset = Asset {
+            path: PathBuf::from("text.md"),
+            kind: AssetKind::Text { content: content.to_string() },
+        };
+        Panel { assets: vec![asset] }
+    }
+
+    #[test]
+    fn image_asset_uses_iterm2_escape_when_supported() {
+        let panel = image_only_panel();
+        let backend = TestBackend::new(20, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut pending = None;
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                pending = render_image_asset(f, &panel, area, true);
+            })
+            .unwrap();
+
+        let pending = pending.expect("should return a PendingImage when iTerm2 is supported");
+        assert_eq!(pending.x, 0);
+        assert_eq!(pending.y, 0);
+        assert!(
+            pending.escape.starts_with("\x1b]1337;File=inline=1;"),
+            "expected an OSC 1337 escape sequence, got: {:?}",
+            pending.escape
+        );
+
+        // The actual pixels are painted out-of-band via the raw escape sequence, not
+        // through ratatui, so ratatui's own buffer for that area should stay untouched.
+        let buffer = terminal.backend().buffer();
+        let row = row_text(buffer, 0);
+        assert!(row.trim().is_empty(), "ratatui buffer should stay blank for the image area, got: {row:?}");
+    }
+
+    #[test]
+    fn image_asset_falls_back_to_halfblock_when_not_supported() {
+        let panel = image_only_panel();
+        let backend = TestBackend::new(20, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut pending = None;
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                pending = render_image_asset(f, &panel, area, false);
+            })
+            .unwrap();
+
+        assert!(pending.is_none(), "should not return a pending image when iTerm2 isn't supported");
+
+        let buffer = terminal.backend().buffer();
+        let full_text: String = (0..buffer.area.height).map(|y| row_text(buffer, y)).collect();
+        assert!(full_text.contains('▀'), "expected the halfblock fallback rendering, got: {full_text:?}");
+    }
+
+    #[test]
+    fn render_panel_returns_pending_image_for_image_only_panel_in_iterm2_mode() {
+        let panel = image_only_panel();
+        let backend = TestBackend::new(20, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let selected_lines = HashSet::new();
+        let mut pending = None;
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                pending = render_panel(f, &panel, area, 0, &selected_lines, true);
+            })
+            .unwrap();
+        assert!(pending.is_some());
+    }
+
+    #[test]
+    fn render_panel_returns_none_for_text_only_panel_regardless_of_iterm2_flag() {
+        let panel = text_only_panel("hello");
+        let backend = TestBackend::new(20, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let selected_lines = HashSet::new();
+        let mut pending = None;
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                pending = render_panel(f, &panel, area, 0, &selected_lines, true);
+            })
+            .unwrap();
+        assert!(pending.is_none());
+    }
+
     #[test]
     fn text_and_word_cloud_stack_vertically_with_text_on_top() {
         let panel = text_and_word_cloud_panel("Panel body text", "My Cloud", &["alpha"]);
@@ -797,7 +989,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                render_panel(f, &panel, area, 0, &selected_lines);
+                render_panel(f, &panel, area, 0, &selected_lines, false);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -817,11 +1009,15 @@ mod tests {
     }
 
     fn single_word_cloud_panel(word: &str, size: WordCloudSize) -> Panel {
+        word_cloud_panel(&[word], size)
+    }
+
+    fn word_cloud_panel(words: &[&str], size: WordCloudSize) -> Panel {
         let cloud_asset = Asset {
             path: PathBuf::from("word-cloud.md"),
             kind: AssetKind::WordCloud {
                 title: "Cloud".to_string(),
-                words: vec![word.to_string()],
+                words: words.iter().map(|w| w.to_string()).collect(),
                 size,
             },
         };
@@ -884,6 +1080,114 @@ mod tests {
         assert_eq!(count_symbol(&buffer, "h"), 2, "each character should be doubled for a large cloud");
         assert_eq!(count_symbol(&buffer, "i"), 2, "each character should be doubled for a large cloud");
         assert!(all_symbol_cells_bold(&buffer, "h"), "large word cloud should be bold");
+    }
+
+    #[test]
+    fn colliding_words_render_intact_without_overwriting_each_other() {
+        // Empirically confirmed (via an offline replay of cloud_position/word_hash) to
+        // land on the same row with overlapping columns under the old per-word placement,
+        // where "and" (rendered second) partially overwrites "Full" (rendered first). The
+        // area is roomy (30x8 inner) so the fixed placer has an obvious free spot to find —
+        // this isolates "does collision avoidance work" from "is the area too cramped for
+        // both words to fit at all" (covered separately by the small-area drop tests).
+        // Outer area adds 2 in each dimension for the 1-cell border.
+        let panel = word_cloud_panel(&["Full", "and"], WordCloudSize::Medium);
+        let backend = TestBackend::new(32, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_word_cloud_asset(f, &panel, area);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let full_text: String = (0..buffer.area.height)
+            .map(|y| row_text(buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            full_text.contains("Full"),
+            "expected \"Full\" to render intact without being overwritten by an overlapping word, got:\n{full_text}"
+        );
+        assert!(
+            full_text.contains("and"),
+            "expected \"and\" to render intact, got:\n{full_text}"
+        );
+    }
+
+    fn word_list(n: usize, prefix: &str) -> Vec<String> {
+        (0..n).map(|i| format!("{prefix}{i}")).collect()
+    }
+
+    /// Reconstructs a placed word's reserved footprint (including padding) for test
+    /// assertions. `PlacedWord` itself only stores the draw origin, since production
+    /// rendering never needs the footprint rect after placement is decided.
+    fn placed_footprint(p: &PlacedWord, repeat: u16) -> Rect {
+        Rect {
+            x: p.x - WORD_PADDING,
+            y: p.y - WORD_PADDING,
+            width: p.word.chars().count() as u16 * repeat + WORD_PADDING * 2,
+            height: 1 + WORD_PADDING * 2,
+        }
+    }
+
+    #[test]
+    fn place_words_never_produces_overlapping_rectangles() {
+        let words = word_list(30, "sizeablewordnumber");
+        let placed = place_words(&words, 1, 60, 20);
+        for i in 0..placed.len() {
+            for j in (i + 1)..placed.len() {
+                let a = placed_footprint(&placed[i], 1);
+                let b = placed_footprint(&placed[j], 1);
+                assert!(
+                    !a.intersects(b),
+                    "placed words {:?} and {:?} overlap: {:?} vs {:?}",
+                    placed[i].word,
+                    placed[j].word,
+                    a,
+                    b
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn place_words_is_deterministic() {
+        let words = word_list(15, "word");
+        let a = place_words(&words, 1, 40, 15);
+        let b = place_words(&words, 1, 40, 15);
+        let a_positions: Vec<(String, u16, u16)> =
+            a.iter().map(|p| (p.word.clone(), p.x, p.y)).collect();
+        let b_positions: Vec<(String, u16, u16)> =
+            b.iter().map(|p| (p.word.clone(), p.x, p.y)).collect();
+        assert_eq!(a_positions, b_positions);
+    }
+
+    #[test]
+    fn place_words_drops_words_that_dont_fit_in_a_small_area() {
+        let words = word_list(30, "w");
+        let placed = place_words(&words, 1, 15, 3);
+        assert!(
+            placed.len() < words.len(),
+            "expected some words to be dropped in a crowded small area, got {} of {}",
+            placed.len(),
+            words.len()
+        );
+    }
+
+    #[test]
+    fn place_words_gives_earlier_words_placement_priority() {
+        // Two tiny words listed first get plenty of free room since nothing has
+        // claimed space yet when they're placed; a flood of later words then
+        // oversubscribes what's left, guaranteeing some of them get dropped.
+        let mut words = word_list(2, "p");
+        words.extend(word_list(60, "extracontenderword"));
+        let placed = place_words(&words, 1, 30, 6);
+        let placed_words: HashSet<&str> = placed.iter().map(|p| p.word.as_str()).collect();
+        assert!(placed_words.contains(words[0].as_str()), "first listed word should always be placed");
+        assert!(placed_words.contains(words[1].as_str()), "second listed word should always be placed");
+        assert!(placed.len() < words.len(), "the flood of later words should oversubscribe the area");
     }
 
     #[test]

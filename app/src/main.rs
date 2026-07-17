@@ -3,6 +3,7 @@ mod assets;
 mod claude;
 mod export;
 mod firework;
+mod iterm2;
 mod markdown;
 mod mermaid;
 mod notes;
@@ -10,8 +11,9 @@ mod state;
 mod ui;
 
 use anyhow::Result;
-use app::App;
+use app::{App, Screen};
 use crossterm::{
+    cursor::MoveTo,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -173,15 +175,60 @@ where
     }
 }
 
-fn run_app<B: ratatui::backend::Backend>(
+fn run_app<B: ratatui::backend::Backend + std::io::Write>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> Result<()>
 where
     B::Error: Send + Sync + 'static,
 {
+    // Tracks the raw OSC-1337 escape sequence last written to the real terminal (if
+    // any), so we don't resend an unchanged image every tick, plus the previous
+    // frame's screen, so we can tell when a popup (Help/Confirm/Countdown) just
+    // closed. Both live outside ui::render because they describe what's actually on
+    // the physical terminal, not app/UI state -- ratatui's own buffer diffing has no
+    // idea these raw-painted pixels exist.
+    let mut last_image_escape: Option<String> = None;
+    let mut last_screen: Option<Screen> = None;
+
     loop {
-        terminal.draw(|f| ui::render(f, app))?;
+        let panel_has_image = app.screen == Screen::Topic
+            && app
+                .topics
+                .get(app.current_topic)
+                .and_then(|t| t.current_panel())
+                .map(|p| p.has_image())
+                .unwrap_or(false);
+
+        // If this frame's panel won't have an image, wipe the real terminal *before*
+        // drawing so any stale image bytes left by an earlier raw write are cleared
+        // and the fresh content below lands on a clean screen in the same pass --
+        // clearing after the draw would flash the just-drawn frame blank for a tick.
+        if !panel_has_image {
+            if last_image_escape.is_some() {
+                terminal.clear()?;
+            }
+            last_image_escape = None;
+        }
+
+        let mut pending_image = None;
+        terminal.draw(|f| {
+            pending_image = ui::render(f, app);
+        })?;
+
+        if app.screen == Screen::Topic {
+            if let Some(image) = &pending_image {
+                // A popup that was covering (part of) the image area leaves a gap
+                // when it closes, even though the image itself hasn't changed, so
+                // force a repaint on the first frame back on Topic.
+                let just_returned_to_topic = last_screen != Some(Screen::Topic);
+                if just_returned_to_topic || last_image_escape.as_deref() != Some(image.escape.as_str()) {
+                    paint_image(terminal, image)?;
+                    last_image_escape = Some(image.escape.clone());
+                }
+            }
+        }
+        last_screen = Some(app.screen);
 
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
@@ -195,6 +242,20 @@ where
 
         app.tick();
     }
+}
+
+/// Writes a raw terminal-graphics-protocol escape sequence directly to the real
+/// terminal, positioned at the image's cell coordinates. This bypasses ratatui's
+/// buffer/diffing entirely -- iTerm2 decodes and rasterizes the embedded image data
+/// itself once it receives the sequence.
+fn paint_image<B: ratatui::backend::Backend + std::io::Write>(
+    terminal: &mut Terminal<B>,
+    image: &ui::PendingImage,
+) -> Result<()> {
+    execute!(terminal.backend_mut(), MoveTo(image.x, image.y))?;
+    write!(terminal.backend_mut(), "{}", image.escape)?;
+    std::io::Write::flush(terminal.backend_mut())?;
+    Ok(())
 }
 
 #[cfg(test)]
