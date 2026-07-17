@@ -62,12 +62,25 @@ struct PlacedWord {
 /// (up to `MAX_PLACEMENT_ATTEMPTS` times) until it finds one that doesn't overlap any
 /// already-placed word. A word that finds no free spot is dropped rather than rendered
 /// on top of another word. Deterministic: the same words + area always place the same way.
+///
+/// Words are placed biggest-footprint-first (the classic tag-cloud packing heuristic --
+/// placing large items while the canvas is still open, then backfilling smaller ones
+/// into the remaining gaps, fits more words overall than placing in list order). Each
+/// word first tries a handful of cheap pseudo-random candidate positions, which keeps
+/// the cloud's organic scattered look in the common, uncrowded case; if all of those
+/// collide, it falls back to an exhaustive scan of every remaining position so a word
+/// is only ever dropped when there truly is no room left for it, not because random
+/// sampling missed a gap that was actually there.
 fn place_words(words: &[String], repeat: u16, inner_width: u16, inner_height: u16) -> Vec<PlacedWord> {
     let seed = cloud_seed(words);
     let mut placed_rects: Vec<Rect> = Vec::new();
     let mut result = Vec::new();
 
-    for (i, word) in words.iter().enumerate() {
+    let mut order: Vec<usize> = (0..words.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(words[i].chars().count()));
+
+    for i in order {
+        let word = &words[i];
         let wh = word_hash(word);
         let footprint_w = word.chars().count() as u16 * repeat + WORD_PADDING * 2;
         let footprint_h = 1 + WORD_PADDING * 2;
@@ -93,6 +106,8 @@ fn place_words(words: &[String], repeat: u16, inner_width: u16, inner_height: u1
             }
         }
 
+        let chosen = chosen.or_else(|| find_free_spot(&placed_rects, footprint_w, footprint_h, inner_width, inner_height));
+
         if let Some(rect) = chosen {
             result.push(PlacedWord {
                 word: word.clone(),
@@ -104,6 +119,21 @@ fn place_words(words: &[String], repeat: u16, inner_width: u16, inner_height: u1
     }
 
     result
+}
+
+/// Exhaustively scans every valid top-left position for a `width` x `height` footprint,
+/// row by row, returning the first one that doesn't intersect any already-placed rect.
+/// `width`/`height` are assumed to already fit within `inner_width`/`inner_height`.
+fn find_free_spot(placed: &[Rect], width: u16, height: u16, inner_width: u16, inner_height: u16) -> Option<Rect> {
+    for y in 0..=(inner_height - height) {
+        for x in 0..=(inner_width - width) {
+            let candidate = Rect { x, y, width, height };
+            if !placed.iter().any(|r| r.intersects(candidate)) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 
@@ -1177,17 +1207,63 @@ mod tests {
     }
 
     #[test]
-    fn place_words_gives_earlier_words_placement_priority() {
-        // Two tiny words listed first get plenty of free room since nothing has
-        // claimed space yet when they're placed; a flood of later words then
-        // oversubscribes what's left, guaranteeing some of them get dropped.
+    fn place_words_still_fits_tiny_words_despite_a_flood_of_larger_ones() {
+        // Placement order is size-first, so these two tiny words are actually placed
+        // LAST, after every larger word has already claimed space -- they still get
+        // placed because the exhaustive fallback scan finds whatever small gaps
+        // remain, rather than giving up after a few unlucky random guesses.
         let mut words = word_list(2, "p");
         words.extend(word_list(60, "extracontenderword"));
         let placed = place_words(&words, 1, 30, 6);
         let placed_words: HashSet<&str> = placed.iter().map(|p| p.word.as_str()).collect();
-        assert!(placed_words.contains(words[0].as_str()), "first listed word should always be placed");
-        assert!(placed_words.contains(words[1].as_str()), "second listed word should always be placed");
-        assert!(placed.len() < words.len(), "the flood of later words should oversubscribe the area");
+        assert!(placed_words.contains(words[0].as_str()), "tiny word should still find a gap");
+        assert!(placed_words.contains(words[1].as_str()), "tiny word should still find a gap");
+        assert!(placed.len() < words.len(), "the flood of larger words should oversubscribe the area");
+    }
+
+    #[test]
+    fn place_words_places_larger_words_before_smaller_ones_when_space_is_tight() {
+        // Two sizeable words are listed LAST, after a flood of tiny competing words,
+        // but placement order is by descending footprint size (not list order), so
+        // they get first pick of space and are always placed -- placing big items
+        // while the canvas is open is what lets more words fit overall. The area has
+        // comfortable room for the two big words regardless of exactly where either
+        // lands (their combined footprint is a small fraction of the total area), so
+        // this isolates "does size-first ordering work" from "is there literally only
+        // one possible non-overlapping arrangement" (a different, tighter scenario).
+        let mut words = word_list(60, "tinyword");
+        words.push("a-fairly-long-word-entry-one".to_string());
+        words.push("a-fairly-long-word-entry-two".to_string());
+        let placed = place_words(&words, 1, 70, 8);
+        let placed_words: HashSet<&str> = placed.iter().map(|p| p.word.as_str()).collect();
+        assert!(placed_words.contains("a-fairly-long-word-entry-one"), "larger word should be placed first");
+        assert!(placed_words.contains("a-fairly-long-word-entry-two"), "larger word should be placed first");
+        assert!(placed.len() < words.len(), "not every tiny word should fit alongside the larger ones");
+    }
+
+    #[test]
+    fn place_words_fits_all_entries_when_there_is_objectively_room() {
+        // Reported bug: real word-cloud phrases dropped from a panel that visibly had
+        // plenty of empty space -- proof it was a placement-luck issue, not genuine
+        // crowding. The area below is roomy enough (150x16) for all four to coexist.
+        let words: Vec<String> = vec![
+            "write a swift app. yes.",
+            "why is that helm file failing to deploy?",
+            "What about an NFS driver?",
+            "Bugs in other peoples code.",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        let placed = place_words(&words, 1, 100, 12);
+        let placed_words: HashSet<&str> = placed.iter().map(|p| p.word.as_str()).collect();
+        for word in &words {
+            assert!(
+                placed_words.contains(word.as_str()),
+                "expected {word:?} to be placed given the area has room for all four, only got: {placed_words:?}"
+            );
+        }
     }
 
     #[test]
