@@ -372,12 +372,13 @@ fn render_panel(
         return pending;
     }
     if has_image && has_text && !has_prompt && !has_diagram && !has_word_cloud {
-        let sides = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        let text_height = text_asset_fit_height(panel, area.width, area.height);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(text_height), Constraint::Min(1)])
             .split(area);
-        let pending = render_image_asset(f, panel, sides[0], iterm2_supported);
-        render_text_asset(f, panel, sides[1]);
+        render_text_asset(f, panel, rows[0]);
+        let pending = render_image_asset(f, panel, rows[1], iterm2_supported);
         return pending;
     }
 
@@ -504,6 +505,25 @@ fn render_image_asset(f: &mut Frame, panel: &Panel, area: Rect, iterm2_supported
 
     f.render_widget(Paragraph::new(lines), area);
     None
+}
+
+/// Height (including top/bottom border) the text panel needs to fit its wrapped
+/// content at the given width, so the image below it can claim the rest of `max_height`.
+fn text_asset_fit_height(panel: &Panel, width: u16, max_height: u16) -> u16 {
+    let Some(asset) = panel.assets.iter().find(|a| matches!(a.kind, AssetKind::Text { .. })) else {
+        return 0;
+    };
+    let AssetKind::Text { content } = &asset.kind else { return 0 };
+    let lines = crate::markdown::render_to_lines(content);
+    let inner_width = width.saturating_sub(2).max(1) as usize;
+    let wrapped_rows: usize = lines
+        .iter()
+        .map(|line| {
+            let w = line.width();
+            if w == 0 { 1 } else { w.div_ceil(inner_width) }
+        })
+        .sum();
+    (wrapped_rows as u16 + 2).clamp(3, max_height.saturating_sub(1).max(3))
 }
 
 fn render_text_asset(f: &mut Frame, panel: &Panel, area: Rect) {
@@ -928,6 +948,20 @@ mod tests {
         Panel { assets: vec![asset] }
     }
 
+    fn text_and_image_panel(text: &str) -> Panel {
+        use image::{DynamicImage, ImageBuffer, Rgb};
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_fn(4, 4, |_, _| Rgb([200, 100, 50])));
+        let text_asset = Asset {
+            path: PathBuf::from("text.md"),
+            kind: AssetKind::Text { content: text.to_string() },
+        };
+        let image_asset = Asset {
+            path: PathBuf::from("image.png"),
+            kind: AssetKind::Image { image: img },
+        };
+        Panel { assets: vec![text_asset, image_asset] }
+    }
+
     #[test]
     fn image_asset_uses_iterm2_escape_when_supported() {
         let panel = image_only_panel();
@@ -1007,6 +1041,40 @@ mod tests {
             })
             .unwrap();
         assert!(pending.is_none());
+    }
+
+    #[test]
+    fn text_and_image_stack_vertically_with_text_shrunk_to_fit() {
+        let panel = text_and_image_panel("Hi");
+        let backend = TestBackend::new(40, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let selected_lines = HashSet::new();
+        let mut pending = None;
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                pending = render_panel(f, &panel, area, 0, &selected_lines, true);
+            })
+            .unwrap();
+
+        let pending = pending.expect("should return a PendingImage for the image half");
+        assert!(
+            pending.y > 0 && pending.y < 6,
+            "text panel should shrink to a few lines above the image, got y={}",
+            pending.y
+        );
+
+        let height = pending
+            .escape
+            .split("height=")
+            .nth(1)
+            .and_then(|s| s.split(';').next())
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("escape sequence should include a height");
+        assert!(
+            height > 14,
+            "image should get most of the panel height once text shrinks to fit, got height={height}"
+        );
     }
 
     #[test]
