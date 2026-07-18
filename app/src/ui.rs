@@ -421,9 +421,10 @@ fn render_panel(
             render_prompt_asset(f, panel, rows[1], selected_line, selected_lines);
         }
         (true, false, false, true) => {
+            let text_height = text_asset_fit_height(panel, area.width, area.height);
             let rows = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .constraints([Constraint::Length(text_height), Constraint::Min(1)])
                 .split(area);
             render_text_asset(f, panel, rows[0]);
             render_word_cloud_asset(f, panel, rows[1]);
@@ -1078,6 +1079,29 @@ mod tests {
     }
 
     #[test]
+    fn text_and_word_cloud_shrinks_text_to_maximize_cloud_space() {
+        let panel = text_and_word_cloud_panel("Hi", "Cloud", &["alpha"]);
+        let backend = TestBackend::new(40, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let selected_lines = HashSet::new();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_panel(f, &panel, area, 0, &selected_lines, false);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let title_row = (0..20)
+            .find(|&y| row_text(buffer, y).contains("Cloud"))
+            .expect("word cloud title should be rendered somewhere");
+        assert!(
+            title_row < 6,
+            "text panel should shrink to a few lines, leaving the word cloud most of the height, got title_row={title_row}"
+        );
+    }
+
+    #[test]
     fn text_and_word_cloud_stack_vertically_with_text_on_top() {
         let panel = text_and_word_cloud_panel("Panel body text", "My Cloud", &["alpha"]);
         let height = 20u16;
@@ -1098,12 +1122,13 @@ mod tests {
             "word cloud title should not be on the very top row when stacked with text: {top_row}"
         );
 
-        let bottom_start = height / 2;
-        let found_in_bottom = (bottom_start..height).any(|y| row_text(buffer, y).contains("My Cloud"));
-        assert!(found_in_bottom, "word cloud title should appear in the bottom half of the panel");
-
-        let found_text_in_top = (0..bottom_start).any(|y| row_text(buffer, y).contains("Panel body text"));
-        assert!(found_text_in_top, "text content should appear in the top half of the panel");
+        let text_row = (0..height)
+            .find(|&y| row_text(buffer, y).contains("Panel body text"))
+            .expect("text content should be rendered somewhere");
+        let cloud_row = (0..height)
+            .find(|&y| row_text(buffer, y).contains("My Cloud"))
+            .expect("word cloud title should be rendered somewhere");
+        assert!(text_row < cloud_row, "text should be stacked above the word cloud");
     }
 
     fn single_word_cloud_panel(word: &str, size: WordCloudSize) -> Panel {
