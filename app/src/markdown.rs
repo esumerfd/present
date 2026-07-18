@@ -92,6 +92,7 @@ pub fn render_to_lines(content: &str) -> Vec<Line<'static>> {
             Event::End(TagEnd::Heading(_)) => {
                 style_stack.pop();
                 lines.push(Line::from(std::mem::take(&mut current)));
+                lines.push(Line::from(""));
             }
             Event::Start(Tag::Paragraph) => {
                 if !current.is_empty() {
@@ -298,6 +299,19 @@ mod tests {
         let lines = render_to_lines(md);
         let text = lines_to_strings(&lines);
         assert!(text.iter().any(|l| l.contains("Quit")), "should have Quit in body, got: {text:?}");
+    }
+
+    #[test]
+    fn heading_is_followed_by_a_blank_line_before_the_next_paragraph() {
+        let md = "# Title\n\nBody text\n";
+        let lines = render_to_lines(md);
+        let text = lines_to_strings(&lines);
+        let heading_idx = text.iter().position(|l| l.contains("Title")).expect("heading not found");
+        assert_eq!(
+            text.get(heading_idx + 1).map(String::as_str),
+            Some(""),
+            "expected a blank line right after the heading, got: {text:?}"
+        );
     }
 
     #[test]
