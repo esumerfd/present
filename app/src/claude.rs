@@ -5,11 +5,7 @@ use std::process::{Command, Stdio};
 
 const PROMPT_TMP: &str = "/tmp/present_prompt.txt";
 
-pub fn send(content: &str, topic: &str, prompt_idx: usize) -> Result<String> {
-    send_with(content, topic, prompt_idx, &RealSender)
-}
-
-fn send_with(
+pub(crate) fn send_with(
     content: &str,
     topic: &str,
     prompt_idx: usize,
@@ -26,12 +22,12 @@ fn send_with(
     }
 }
 
-trait ClaudeSender {
+pub(crate) trait ClaudeSender {
     fn send_via_osascript(&self, content: &str) -> Result<()>;
     fn copy_to_clipboard(&self, content: &str) -> Result<()>;
 }
 
-struct RealSender;
+pub(crate) struct RealSender;
 
 impl ClaudeSender for RealSender {
     fn send_via_osascript(&self, content: &str) -> Result<()> {
@@ -78,6 +74,20 @@ fn save_to_gen(content: &str, topic: &str, prompt_idx: usize) -> Result<()> {
     fs::create_dir_all(&dir)?;
     fs::write(format!("{dir}/prompt.md"), content)?;
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) struct NoopSender;
+
+#[cfg(test)]
+impl ClaudeSender for NoopSender {
+    fn send_via_osascript(&self, _content: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn copy_to_clipboard(&self, _content: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

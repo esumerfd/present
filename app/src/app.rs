@@ -83,6 +83,7 @@ pub struct App {
     pub last_dir_signature: (usize, SystemTime),
     pub started_at: SystemTime,
     pub pending_editor: Option<EditorLaunch>,
+    sender: Box<dyn crate::claude::ClaudeSender>,
 }
 
 impl App {
@@ -112,6 +113,7 @@ impl App {
             last_dir_signature,
             started_at: SystemTime::now(),
             pending_editor: None,
+            sender: Box::new(crate::claude::RealSender),
         };
         if let Ok(Some(state)) = crate::state::load_state(assets_dir) {
             app.apply_state(state);
@@ -374,7 +376,7 @@ impl App {
         let topic_name = topic.name.clone();
         let content = self.pending_content.clone();
 
-        match crate::claude::send(&content, &topic_name, panel_idx) {
+        match crate::claude::send_with(&content, &topic_name, panel_idx, self.sender.as_ref()) {
             Ok(msg) => {
                 self.status_message = Some(msg);
                 if let Some(topic) = self.topics.get_mut(self.current_topic) {
@@ -537,6 +539,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::assets::{Asset, AssetKind, Panel};
+    use std::cell::RefCell;
     use std::collections::HashSet;
     use std::path::PathBuf;
 
@@ -566,6 +569,7 @@ mod tests {
             last_dir_signature: (0, SystemTime::UNIX_EPOCH),
         started_at: SystemTime::now(),
         pending_editor: None,
+        sender: Box::new(crate::claude::NoopSender),
         }
     }
 
@@ -604,6 +608,7 @@ mod tests {
             last_dir_signature: (0, SystemTime::UNIX_EPOCH),
         started_at: SystemTime::now(),
         pending_editor: None,
+        sender: Box::new(crate::claude::NoopSender),
         }
     }
 
@@ -824,6 +829,7 @@ mod tests {
             last_dir_signature: (0, SystemTime::UNIX_EPOCH),
         started_at: SystemTime::now(),
         pending_editor: None,
+        sender: Box::new(crate::claude::NoopSender),
         }
     }
 
@@ -1045,6 +1051,39 @@ mod tests {
         app.tick();
         assert_eq!(app.screen, Screen::Topic);
         assert!(app.selected_lines.is_empty());
+    }
+
+    #[test]
+    fn execute_send_goes_through_injected_sender_not_real_commands() {
+        let mut app = make_app_with_prompt("line1\nline2");
+        let spy = std::rc::Rc::new(SpySender { osascript_calls: RefCell::new(0) });
+        app.sender = Box::new(SpySenderHandle(spy.clone()));
+
+        app.selected_line = 0;
+        app.handle_key(KeyCode::Char('c'));
+        app.handle_key(KeyCode::Char('s'));
+        app.handle_key(KeyCode::Enter);
+        app.countdown_start = Some(Instant::now() - std::time::Duration::from_secs(10));
+        app.tick();
+
+        assert_eq!(*spy.osascript_calls.borrow(), 1);
+    }
+
+    struct SpySender {
+        osascript_calls: RefCell<usize>,
+    }
+
+    struct SpySenderHandle(std::rc::Rc<SpySender>);
+
+    impl crate::claude::ClaudeSender for SpySenderHandle {
+        fn send_via_osascript(&self, _content: &str) -> anyhow::Result<()> {
+            *self.0.osascript_calls.borrow_mut() += 1;
+            Ok(())
+        }
+
+        fn copy_to_clipboard(&self, _content: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     fn tempdir(suffix: &str) -> std::path::PathBuf {
