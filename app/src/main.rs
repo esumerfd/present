@@ -11,7 +11,7 @@ mod state;
 mod ui;
 
 use anyhow::Result;
-use app::{App, Screen};
+use app::{App, EditorLaunch, Screen};
 use crossterm::{
     cursor::MoveTo,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
@@ -252,12 +252,47 @@ where
                     if app.handle_key(key.code) {
                         return Ok(());
                     }
+                    if let Some(launch) = app.pending_editor.take() {
+                        match run_editor(terminal, &launch)? {
+                            Ok(status) if !status.success() => {
+                                app.status_message = Some(format!("nvim exited with {status}"));
+                            }
+                            Err(e) => {
+                                app.status_message = Some(format!("Failed to launch nvim: {e}"));
+                            }
+                            Ok(_) => {}
+                        }
+                        // nvim owned the real screen; force a full repaint (and, if
+                        // the current panel has one, a fresh image write) next frame.
+                        terminal.clear()?;
+                        last_image_escape = None;
+                    }
                 }
             }
         }
 
         app.tick();
     }
+}
+
+/// Suspends the TUI's terminal state, runs `nvim` (or whatever `launch.args`
+/// specify) synchronously with inherited stdio so it gets a normal interactive
+/// terminal, then restores raw mode/alternate screen/mouse capture once it exits.
+fn run_editor<B: ratatui::backend::Backend + std::io::Write>(
+    terminal: &mut Terminal<B>,
+    launch: &EditorLaunch,
+) -> Result<io::Result<std::process::ExitStatus>> {
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+
+    let result = std::process::Command::new("nvim")
+        .args(&launch.args)
+        .current_dir(&launch.cwd)
+        .status();
+
+    enable_raw_mode()?;
+    execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+    Ok(result)
 }
 
 /// Writes a raw terminal-graphics-protocol escape sequence directly to the real

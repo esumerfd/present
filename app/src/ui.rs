@@ -808,6 +808,7 @@ fn render_help(f: &mut Frame) {
             Line::from(vec![key("S"),          sep(), desc("Send all lines")]),
             Line::from(""),
             Line::from(vec![key("C"),          sep(), desc("Copy text file path")]),
+            Line::from(vec![key("V"),          sep(), desc("Open panel's markdown in nvim")]),
             Line::from(vec![key("R"),          sep(), desc("Reset to start")]),
             Line::from(vec![key("q"),          sep(), desc("Quit")]),
             Line::from(""),

@@ -58,6 +58,23 @@ impl Panel {
     pub fn notes(&self) -> Option<&Asset> {
         self.assets.iter().find(|a| matches!(a.kind, AssetKind::Notes { .. }))
     }
+
+    /// This panel's markdown asset paths, ordered for editor splits: `text.md` first
+    /// (if present), then every other markdown file alphabetically by name.
+    pub fn markdown_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self
+            .assets
+            .iter()
+            .map(|a| a.path.clone())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+            .collect();
+        paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        if let Some(pos) = paths.iter().position(|p| p.file_name().and_then(|n| n.to_str()) == Some("text.md")) {
+            let text_md = paths.remove(pos);
+            paths.insert(0, text_md);
+        }
+        paths
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -493,6 +510,44 @@ mod tests {
         };
         assert_eq!(*size, WordCloudSize::Medium);
         cleanup(&dir);
+    }
+
+    #[test]
+    fn markdown_paths_puts_text_md_first_and_sorts_the_rest_alphabetically() {
+        let panel = Panel {
+            assets: vec![
+                Asset { path: PathBuf::from("dir/word-cloud.md"), kind: AssetKind::WordCloud { title: "T".into(), words: vec![], size: WordCloudSize::default() } },
+                Asset { path: PathBuf::from("dir/prompt.md"), kind: AssetKind::Prompt { label: "L".into(), content: String::new(), sent: false } },
+                Asset { path: PathBuf::from("dir/text.md"), kind: AssetKind::Text { content: String::new() } },
+                Asset { path: PathBuf::from("dir/diagram.md"), kind: AssetKind::Diagram { content: String::new() } },
+                Asset { path: PathBuf::from("dir/notes.md"), kind: AssetKind::Notes { content: String::new() } },
+            ],
+        };
+        let paths = panel.markdown_paths();
+        let names: Vec<String> = paths.iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).collect();
+        assert_eq!(names, vec!["text.md", "diagram.md", "notes.md", "prompt.md", "word-cloud.md"]);
+    }
+
+    #[test]
+    fn markdown_paths_excludes_non_markdown_assets() {
+        use image::{DynamicImage, ImageBuffer, Rgb};
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_fn(1, 1, |_, _| Rgb([0u8, 0, 0])));
+        let panel = Panel {
+            assets: vec![
+                Asset { path: PathBuf::from("dir/text.md"), kind: AssetKind::Text { content: String::new() } },
+                Asset { path: PathBuf::from("dir/image.png"), kind: AssetKind::Image { image: img } },
+            ],
+        };
+        let paths = panel.markdown_paths();
+        assert_eq!(paths, vec![PathBuf::from("dir/text.md")]);
+    }
+
+    #[test]
+    fn markdown_paths_empty_when_no_markdown_assets() {
+        use image::{DynamicImage, ImageBuffer, Rgb};
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_fn(1, 1, |_, _| Rgb([0u8, 0, 0])));
+        let panel = Panel { assets: vec![Asset { path: PathBuf::from("dir/image.png"), kind: AssetKind::Image { image: img } }] };
+        assert!(panel.markdown_paths().is_empty());
     }
 
     #[test]

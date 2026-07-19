@@ -3,7 +3,17 @@ use crate::firework::Firework;
 use crate::state::PresentationState;
 use crossterm::event::KeyCode;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
+
+/// A queued external-editor invocation: `nvim -o <files...>`, run with `cwd` as its
+/// working directory. Built by `App::nvim_launch` and drained by the main loop, which
+/// suspends the TUI's terminal state around the actual `Command::spawn`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorLaunch {
+    pub cwd: PathBuf,
+    pub args: Vec<String>,
+}
 
 fn dbg(msg: &str) {
     use std::io::Write;
@@ -72,6 +82,7 @@ pub struct App {
     pub last_poll: Instant,
     pub last_dir_signature: (usize, SystemTime),
     pub started_at: SystemTime,
+    pub pending_editor: Option<EditorLaunch>,
 }
 
 impl App {
@@ -100,6 +111,7 @@ impl App {
             last_poll: Instant::now(),
             last_dir_signature,
             started_at: SystemTime::now(),
+            pending_editor: None,
         };
         if let Ok(Some(state)) = crate::state::load_state(assets_dir) {
             app.apply_state(state);
@@ -162,6 +174,7 @@ impl App {
                     KeyCode::Char('R') => self.reset(),
                     KeyCode::Char('c') => self.toggle_selected_line(),
                     KeyCode::Char('C') => self.copy_text_path_to_clipboard(),
+                    KeyCode::Char('V') => self.open_in_editor(),
                     KeyCode::Char(' ') | KeyCode::Char('l') | KeyCode::Down => self.next_panel(),
                     KeyCode::Char('h') | KeyCode::Up => self.prev_panel(),
                     KeyCode::Right => self.next_topic(),
@@ -406,6 +419,32 @@ impl App {
         }
     }
 
+    /// Queues an `nvim -o` launch for the current panel's markdown files (`text.md`
+    /// first, then the rest alphabetically), cwd'd into the assets dir. The main loop
+    /// drains `pending_editor` and actually runs it, since only it holds the terminal
+    /// handle needed to suspend/restore the TUI around the external process.
+    fn open_in_editor(&mut self) {
+        self.pending_editor = self.nvim_launch();
+        if self.pending_editor.is_none() {
+            self.status_message = Some("No markdown files on this panel".to_string());
+        }
+    }
+
+    fn nvim_launch(&self) -> Option<EditorLaunch> {
+        let panel = self.topics.get(self.current_topic)?.current_panel()?;
+        let md_paths = panel.markdown_paths();
+        if md_paths.is_empty() {
+            return None;
+        }
+        let mut args = vec!["-o".to_string()];
+        for path in &md_paths {
+            let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+            args.push(absolute.to_string_lossy().to_string());
+        }
+        let cwd = std::fs::canonicalize(&self.assets_dir).unwrap_or_else(|_| PathBuf::from(&self.assets_dir));
+        Some(EditorLaunch { cwd, args })
+    }
+
     fn reset(&mut self) {
         self.current_topic = 0;
         for topic in &mut self.topics {
@@ -502,6 +541,7 @@ mod tests {
             last_poll: Instant::now(),
             last_dir_signature: (0, SystemTime::UNIX_EPOCH),
         started_at: SystemTime::now(),
+        pending_editor: None,
         }
     }
 
@@ -539,6 +579,7 @@ mod tests {
             last_poll: Instant::now(),
             last_dir_signature: (0, SystemTime::UNIX_EPOCH),
         started_at: SystemTime::now(),
+        pending_editor: None,
         }
     }
 
@@ -758,7 +799,41 @@ mod tests {
             last_poll: Instant::now(),
             last_dir_signature: (0, SystemTime::UNIX_EPOCH),
         started_at: SystemTime::now(),
+        pending_editor: None,
         }
+    }
+
+    #[test]
+    fn capital_v_opens_editor_with_markdown_files_text_md_first_then_alphabetical() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir("editor-launch");
+        let panel_dir = dir.join("01-topic").join("1");
+        std::fs::create_dir_all(&panel_dir).unwrap();
+        std::fs::write(panel_dir.join("text.md"), "body").unwrap();
+        std::fs::write(panel_dir.join("prompt.md"), "# Label\n\ndo it").unwrap();
+        std::fs::write(panel_dir.join("notes.md"), "remember this").unwrap();
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+        app.handle_key(KeyCode::Char('V'));
+
+        let launch = app.pending_editor.expect("should build an editor launch");
+        assert_eq!(launch.cwd, std::fs::canonicalize(&dir).unwrap());
+        let expected: Vec<String> = ["text.md", "notes.md", "prompt.md"]
+            .iter()
+            .map(|f| std::fs::canonicalize(panel_dir.join(f)).unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(launch.args, [vec!["-o".to_string()], expected].concat());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn capital_v_sets_status_when_panel_has_no_markdown_files() {
+        let mut app = make_app(&[1]);
+        app.handle_key(KeyCode::Char('V'));
+        assert!(app.pending_editor.is_none());
+        let msg = app.status_message.as_deref().unwrap_or("");
+        assert!(msg.contains("No markdown files"), "expected 'No markdown files' in: {msg}");
     }
 
     #[test]
