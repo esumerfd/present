@@ -140,7 +140,14 @@ Slow down here. Make eye contact before advancing.
 | `s` | Stage send — selected lines if any, else the cursor line — starts countdown, then auto-types into iTerm2 or copies to clipboard |
 | `S` | Stage send — all lines in the prompt |
 | `C` | Copy the panel's text file path to the clipboard |
-| `V` | Open the panel's markdown files in `nvim`, as horizontal splits (`text.md` on top, the rest alphabetically below), cwd'd into the assets dir |
 | `R` | Reset to the start |
 | `?` | Toggle help |
 | `q` | Quit |
+
+### Editing
+
+| Key | Action |
+|-----|--------|
+| `V` | Open the panel's markdown files in `nvim`, as horizontal splits (`text.md` on top, the rest alphabetically below), cwd'd into the assets dir |
+| `H` | Move the current panel earlier — swaps its directory number with the previous panel's. No-op on the first panel |
+| `L` | Move the current panel later — swaps its directory number with the next panel's. No-op on the last panel |

@@ -773,7 +773,7 @@ fn render_status(f: &mut Frame, app: &App, _has_prompt: bool, area: Rect) {
 
 fn render_help(f: &mut Frame) {
     let area = f.area();
-    let popup = centered_rect(50, 20, area);
+    let popup = centered_rect(50, 23, area);
     f.render_widget(Clear, popup);
     f.render_widget(
         Block::default()
@@ -808,9 +808,12 @@ fn render_help(f: &mut Frame) {
             Line::from(vec![key("S"),          sep(), desc("Send all lines")]),
             Line::from(""),
             Line::from(vec![key("C"),          sep(), desc("Copy text file path")]),
-            Line::from(vec![key("V"),          sep(), desc("Open panel's markdown in nvim")]),
             Line::from(vec![key("R"),          sep(), desc("Reset to start")]),
             Line::from(vec![key("q"),          sep(), desc("Quit")]),
+            Line::from(""),
+            Line::from(vec![key("V"),          sep(), desc("Open panel's markdown in nvim")]),
+            Line::from(vec![key("H"),          sep(), desc("Move panel earlier")]),
+            Line::from(vec![key("L"),          sep(), desc("Move panel later")]),
             Line::from(""),
             Line::from(vec![key("?  Esc"),     sep(), desc("Close this help")]),
         ]),

@@ -180,6 +180,38 @@ pub fn load_topics(assets_dir: &str) -> Result<Vec<Topic>> {
     Ok(topics)
 }
 
+/// Swaps the on-disk directory numbers of `topic.panels[index_a]` and
+/// `topic.panels[index_b]`, reordering them, then reloads `topic.panels` from disk
+/// so it reflects the new order/content. A three-way rename through a temp name,
+/// since renaming directory A straight to B's name would first require deleting B.
+pub fn swap_panels(assets_dir: &str, topic: &mut Topic, index_a: usize, index_b: usize) -> Result<()> {
+    let dir_a = panel_dir_name(&topic.panels[index_a])
+        .ok_or_else(|| anyhow::anyhow!("panel at index {index_a} has no directory"))?;
+    let dir_b = panel_dir_name(&topic.panels[index_b])
+        .ok_or_else(|| anyhow::anyhow!("panel at index {index_b} has no directory"))?;
+
+    let topic_path = Path::new(assets_dir).join(&topic.name);
+    let path_a = topic_path.join(&dir_a);
+    let path_b = topic_path.join(&dir_b);
+    let tmp_path = topic_path.join(format!(".swap-{dir_a}-{dir_b}"));
+
+    fs::rename(&path_a, &tmp_path)?;
+    fs::rename(&path_b, &path_a)?;
+    fs::rename(&tmp_path, &path_b)?;
+
+    topic.panels = load_panels(&topic_path)?;
+    Ok(())
+}
+
+fn panel_dir_name(panel: &Panel) -> Option<String> {
+    panel
+        .assets
+        .first()
+        .and_then(|a| a.path.parent())
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+}
+
 fn load_panels(topic_path: &Path) -> Result<Vec<Panel>> {
     let mut entries: Vec<_> = fs::read_dir(topic_path)?
         .filter_map(|e| e.ok())
@@ -548,6 +580,54 @@ mod tests {
         let img = DynamicImage::ImageRgb8(ImageBuffer::from_fn(1, 1, |_, _| Rgb([0u8, 0, 0])));
         let panel = Panel { assets: vec![Asset { path: PathBuf::from("dir/image.png"), kind: AssetKind::Image { image: img } }] };
         assert!(panel.markdown_paths().is_empty());
+    }
+
+    #[test]
+    fn swap_panels_swaps_directory_contents_and_reloads_topic_panels() {
+        let dir = tempdir("swap-panels");
+        let topic_dir = dir.join("01-topic");
+        fs::create_dir_all(topic_dir.join("10")).unwrap();
+        fs::write(topic_dir.join("10").join("text.md"), "content-10").unwrap();
+        fs::write(topic_dir.join("10").join("notes.md"), "notes-10").unwrap();
+        fs::create_dir_all(topic_dir.join("20")).unwrap();
+        fs::write(topic_dir.join("20").join("text.md"), "content-20").unwrap();
+        fs::create_dir_all(topic_dir.join("30")).unwrap();
+        fs::write(topic_dir.join("30").join("text.md"), "content-30").unwrap();
+
+        let mut topic = Topic {
+            name: "01-topic".to_string(),
+            label: "Topic".to_string(),
+            panels: load_panels(&topic_dir).unwrap(),
+            current_panel: 1,
+        };
+        assert_eq!(topic.panels.len(), 3);
+
+        swap_panels(dir.to_str().unwrap(), &mut topic, 0, 1).unwrap();
+
+        // Directory names on disk are unchanged...
+        assert!(topic_dir.join("10").exists());
+        assert!(topic_dir.join("20").exists());
+        assert!(topic_dir.join("30").exists());
+        // ...but the content that used to live in "20" is now in "10", and vice versa.
+        assert_eq!(fs::read_to_string(topic_dir.join("10").join("text.md")).unwrap(), "content-20");
+        assert_eq!(fs::read_to_string(topic_dir.join("20").join("text.md")).unwrap(), "content-10");
+        assert_eq!(fs::read_to_string(topic_dir.join("20").join("notes.md")).unwrap(), "notes-10");
+        assert_eq!(fs::read_to_string(topic_dir.join("30").join("text.md")).unwrap(), "content-30");
+
+        // topic.panels is reloaded in on-disk (numeric) order, so its *content* is
+        // now [former-20, former-10, 30].
+        assert_eq!(topic.panels.len(), 3);
+        assert_eq!(text_content(&topic.panels[0]), "content-20");
+        assert_eq!(text_content(&topic.panels[1]), "content-10");
+        assert_eq!(text_content(&topic.panels[2]), "content-30");
+
+        cleanup(&dir);
+    }
+
+    fn text_content(panel: &Panel) -> String {
+        let asset = panel.assets.iter().find(|a| matches!(a.kind, AssetKind::Text { .. })).unwrap();
+        let AssetKind::Text { content } = &asset.kind else { unreachable!() };
+        content.clone()
     }
 
     #[test]

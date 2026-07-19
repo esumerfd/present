@@ -175,6 +175,8 @@ impl App {
                     KeyCode::Char('c') => self.toggle_selected_line(),
                     KeyCode::Char('C') => self.copy_text_path_to_clipboard(),
                     KeyCode::Char('V') => self.open_in_editor(),
+                    KeyCode::Char('H') => self.reorder_panel(-1),
+                    KeyCode::Char('L') => self.reorder_panel(1),
                     KeyCode::Char(' ') | KeyCode::Char('l') | KeyCode::Down => self.next_panel(),
                     KeyCode::Char('h') | KeyCode::Up => self.prev_panel(),
                     KeyCode::Right => self.next_topic(),
@@ -443,6 +445,28 @@ impl App {
         }
         let cwd = std::fs::canonicalize(&self.assets_dir).unwrap_or_else(|_| PathBuf::from(&self.assets_dir));
         Some(EditorLaunch { cwd, args })
+    }
+
+    /// Swaps the current panel's on-disk directory number with its previous
+    /// (`direction: -1`, "H") or next (`direction: 1`, "L") neighbor, reordering it,
+    /// and moves the cursor along with it so the presenter keeps viewing the same
+    /// content. A no-op at either end of the panel list.
+    fn reorder_panel(&mut self, direction: i32) {
+        let Some(topic) = self.topics.get_mut(self.current_topic) else { return };
+        let current = topic.current_panel;
+        let Some(target) = current.checked_add_signed(direction as isize) else { return };
+        if target >= topic.panels.len() {
+            return;
+        }
+        match crate::assets::swap_panels(&self.assets_dir, topic, current, target) {
+            Ok(()) => {
+                topic.current_panel = target;
+                self.persist_state();
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Failed to reorder panel: {e}"));
+            }
+        }
     }
 
     fn reset(&mut self) {
@@ -834,6 +858,93 @@ mod tests {
         assert!(app.pending_editor.is_none());
         let msg = app.status_message.as_deref().unwrap_or("");
         assert!(msg.contains("No markdown files"), "expected 'No markdown files' in: {msg}");
+    }
+
+    fn tempdir_with_numbered_panels(suffix: &str, panel_dirs: &[&str]) -> std::path::PathBuf {
+        let dir = tempdir(suffix);
+        let topic_dir = dir.join("01-topic");
+        for name in panel_dirs {
+            let panel_dir = topic_dir.join(name);
+            std::fs::create_dir_all(&panel_dir).unwrap();
+            std::fs::write(panel_dir.join("text.md"), format!("content-{name}")).unwrap();
+        }
+        dir
+    }
+
+    fn panel_text_contents(app: &App) -> Vec<String> {
+        app.topics[0]
+            .panels
+            .iter()
+            .map(|p| {
+                let asset = p.assets.iter().find(|a| matches!(a.kind, AssetKind::Text { .. })).unwrap();
+                let AssetKind::Text { content } = &asset.kind else { unreachable!() };
+                content.clone()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn capital_h_swaps_current_panel_with_previous_and_follows_it() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir_with_numbered_panels("reorder-h", &["10", "20", "30"]);
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+        app.topics[0].current_panel = 1; // viewing "20"
+
+        app.handle_key(KeyCode::Char('H'));
+
+        assert_eq!(app.topics[0].current_panel, 0, "cursor should follow panel 20 to its new position");
+        assert_eq!(panel_text_contents(&app), vec!["content-20", "content-10", "content-30"]);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn capital_h_is_a_noop_at_the_first_panel() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir_with_numbered_panels("reorder-h-noop", &["10", "20", "30"]);
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+        app.topics[0].current_panel = 0;
+
+        app.handle_key(KeyCode::Char('H'));
+
+        assert_eq!(app.topics[0].current_panel, 0);
+        assert_eq!(panel_text_contents(&app), vec!["content-10", "content-20", "content-30"]);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn capital_l_swaps_current_panel_with_next_and_follows_it() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir_with_numbered_panels("reorder-l", &["10", "20", "30"]);
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+        app.topics[0].current_panel = 1; // viewing "20"
+
+        app.handle_key(KeyCode::Char('L'));
+
+        assert_eq!(app.topics[0].current_panel, 2, "cursor should follow panel 20 to its new position");
+        assert_eq!(panel_text_contents(&app), vec!["content-10", "content-30", "content-20"]);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn capital_l_is_a_noop_at_the_last_panel() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir_with_numbered_panels("reorder-l-noop", &["10", "20", "30"]);
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+        app.topics[0].current_panel = 2;
+
+        app.handle_key(KeyCode::Char('L'));
+
+        assert_eq!(app.topics[0].current_panel, 2);
+        assert_eq!(panel_text_contents(&app), vec!["content-10", "content-20", "content-30"]);
+        cleanup(&dir);
     }
 
     #[test]
