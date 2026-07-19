@@ -14,7 +14,7 @@ pub struct NotesApp {
     pub last_asset_poll: Instant,
     pub last_state_poll: Instant,
     pub last_dir_signature: (usize, SystemTime),
-    pub started_at: Instant,
+    pub started_at: Option<SystemTime>,
 }
 
 impl NotesApp {
@@ -30,7 +30,7 @@ impl NotesApp {
             last_asset_poll: Instant::now(),
             last_state_poll: Instant::now(),
             last_dir_signature,
-            started_at: Instant::now(),
+            started_at: None,
         };
         app.sync_position();
         Ok(app)
@@ -46,6 +46,8 @@ impl NotesApp {
             .unwrap_or(0);
         let panel = state.panel_per_topic.get(self.current_topic).copied().unwrap_or(0);
         self.current_panel = panel.min(panel_count.saturating_sub(1));
+        self.started_at =
+            state.started_at_epoch_secs.map(|secs| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs));
     }
 
     fn poll_for_asset_changes(&mut self) {
@@ -116,13 +118,51 @@ mod tests {
 
         save_state(
             dir.to_str().unwrap(),
-            &PresentationState { current_topic: 1, panel_per_topic: vec![1, 0], visited: vec![0, 1] },
+            &PresentationState { current_topic: 1, panel_per_topic: vec![1, 0], visited: vec![0, 1], started_at_epoch_secs: None },
         )
         .unwrap();
 
         let app = NotesApp::new(dir.to_str().unwrap()).unwrap();
         assert_eq!(app.current_topic, 1);
         assert_eq!(app.current_panel, 0);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn notes_app_new_adopts_started_at_from_state_file() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir("adopts-started-at");
+        write_panel(&dir.join("01-topic"), "1", None);
+
+        save_state(
+            dir.to_str().unwrap(),
+            &PresentationState {
+                current_topic: 0,
+                panel_per_topic: vec![0],
+                visited: vec![0],
+                started_at_epoch_secs: Some(1_700_000_000),
+            },
+        )
+        .unwrap();
+
+        let app = NotesApp::new(dir.to_str().unwrap()).unwrap();
+        let started_at = app.started_at.expect("started_at should be populated from state");
+        assert_eq!(
+            started_at.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            1_700_000_000
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn notes_app_new_has_no_started_at_when_state_file_has_none() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir("no-started-at");
+        write_panel(&dir.join("01-topic"), "1", None);
+        let _ = crate::state::clear_state(dir.to_str().unwrap());
+
+        let app = NotesApp::new(dir.to_str().unwrap()).unwrap();
+        assert!(app.started_at.is_none());
         cleanup(&dir);
     }
 
@@ -139,7 +179,7 @@ mod tests {
 
         save_state(
             dir.to_str().unwrap(),
-            &PresentationState { current_topic: 0, panel_per_topic: vec![1], visited: vec![0] },
+            &PresentationState { current_topic: 0, panel_per_topic: vec![1], visited: vec![0], started_at_epoch_secs: None },
         )
         .unwrap();
         app.last_state_poll = Instant::now() - std::time::Duration::from_millis(300);
@@ -161,7 +201,7 @@ mod tests {
 
         save_state(
             dir.to_str().unwrap(),
-            &PresentationState { current_topic: 0, panel_per_topic: vec![1], visited: vec![0] },
+            &PresentationState { current_topic: 0, panel_per_topic: vec![1], visited: vec![0], started_at_epoch_secs: None },
         )
         .unwrap();
         app.last_state_poll = Instant::now();
@@ -196,7 +236,7 @@ mod tests {
 
         save_state(
             dir.to_str().unwrap(),
-            &PresentationState { current_topic: 5, panel_per_topic: vec![99], visited: vec![0] },
+            &PresentationState { current_topic: 5, panel_per_topic: vec![99], visited: vec![0], started_at_epoch_secs: None },
         )
         .unwrap();
 

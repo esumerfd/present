@@ -23,6 +23,8 @@ pub struct PresentationState {
     pub current_topic: usize,
     pub panel_per_topic: Vec<usize>,
     pub visited: Vec<usize>,
+    #[serde(default)]
+    pub started_at_epoch_secs: Option<u64>,
 }
 
 fn canonical_key(assets_dir: &str) -> String {
@@ -82,6 +84,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn started_at_epoch_secs_defaults_to_none_for_state_files_from_before_the_field_existed() {
+        let f = "/tmp/present-state-test-legacy-no-started-at.json";
+        let _ = fs::remove_file(f);
+        let key = canonical_key("/tmp");
+        let json = format!(
+            r#"{{"{key}": {{"current_topic": 1, "panel_per_topic": [0], "visited": [0]}}}}"#
+        );
+        fs::write(f, json).unwrap();
+        let loaded = load_state_from(f, "/tmp").unwrap().expect("state should exist");
+        assert_eq!(loaded.started_at_epoch_secs, None);
+        let _ = fs::remove_file(f);
+    }
+
+    #[test]
     fn returns_none_when_file_absent() {
         let f = "/tmp/present-state-test-absent.json";
         let _ = fs::remove_file(f);
@@ -93,7 +109,7 @@ mod tests {
     fn returns_none_for_unknown_key() {
         let f = "/tmp/present-state-test-unknown-key.json";
         let _ = fs::remove_file(f);
-        let state = PresentationState { current_topic: 1, panel_per_topic: vec![0], visited: vec![0] };
+        let state = PresentationState { current_topic: 1, panel_per_topic: vec![0], visited: vec![0], started_at_epoch_secs: None };
         save_state_to(f, "/tmp", &state).unwrap();
         let result = load_state_from(f, "/nonexistent-path-xyz").unwrap();
         assert!(result.is_none());
@@ -108,12 +124,14 @@ mod tests {
             current_topic: 2,
             panel_per_topic: vec![0, 1, 3],
             visited: vec![0, 1, 2],
+            started_at_epoch_secs: Some(1_700_000_000),
         };
         save_state_to(f, "/tmp", &state).unwrap();
         let loaded = load_state_from(f, "/tmp").unwrap().expect("state should exist");
         assert_eq!(loaded.current_topic, 2);
         assert_eq!(loaded.panel_per_topic, vec![0, 1, 3]);
         assert_eq!(loaded.visited, vec![0, 1, 2]);
+        assert_eq!(loaded.started_at_epoch_secs, Some(1_700_000_000));
         let _ = fs::remove_file(f);
     }
 
@@ -121,7 +139,7 @@ mod tests {
     fn clear_removes_state_for_key() {
         let f = "/tmp/present-state-test-clear.json";
         let _ = fs::remove_file(f);
-        let state = PresentationState { current_topic: 1, panel_per_topic: vec![2], visited: vec![0, 1] };
+        let state = PresentationState { current_topic: 1, panel_per_topic: vec![2], visited: vec![0, 1], started_at_epoch_secs: None };
         save_state_to(f, "/tmp", &state).unwrap();
         clear_state_from(f, "/tmp").unwrap();
         let result = load_state_from(f, "/tmp").unwrap();
@@ -133,8 +151,8 @@ mod tests {
     fn clear_preserves_other_keys() {
         let f = "/tmp/present-state-test-clear-preserve.json";
         let _ = fs::remove_file(f);
-        let s1 = PresentationState { current_topic: 0, panel_per_topic: vec![1], visited: vec![0] };
-        let s2 = PresentationState { current_topic: 2, panel_per_topic: vec![3], visited: vec![0, 1, 2] };
+        let s1 = PresentationState { current_topic: 0, panel_per_topic: vec![1], visited: vec![0], started_at_epoch_secs: None };
+        let s2 = PresentationState { current_topic: 2, panel_per_topic: vec![3], visited: vec![0, 1, 2], started_at_epoch_secs: None };
         save_state_to(f, "/tmp", &s1).unwrap();
         save_state_to(f, "/var", &s2).unwrap();
         clear_state_from(f, "/tmp").unwrap();
@@ -155,8 +173,8 @@ mod tests {
     fn preserves_other_keys_on_save() {
         let f = "/tmp/present-state-test-multi-key.json";
         let _ = fs::remove_file(f);
-        let s1 = PresentationState { current_topic: 0, panel_per_topic: vec![1], visited: vec![0] };
-        let s2 = PresentationState { current_topic: 3, panel_per_topic: vec![2], visited: vec![0, 1, 2, 3] };
+        let s1 = PresentationState { current_topic: 0, panel_per_topic: vec![1], visited: vec![0], started_at_epoch_secs: None };
+        let s2 = PresentationState { current_topic: 3, panel_per_topic: vec![2], visited: vec![0, 1, 2, 3], started_at_epoch_secs: None };
         save_state_to(f, "/tmp", &s1).unwrap();
         save_state_to(f, "/var", &s2).unwrap();
         let l1 = load_state_from(f, "/tmp").unwrap().expect("state for /tmp");

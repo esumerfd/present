@@ -71,6 +71,7 @@ pub struct App {
     pub assets_dir: String,
     pub last_poll: Instant,
     pub last_dir_signature: (usize, SystemTime),
+    pub started_at: SystemTime,
 }
 
 impl App {
@@ -98,9 +99,15 @@ impl App {
             assets_dir: assets_dir.to_string(),
             last_poll: Instant::now(),
             last_dir_signature,
+            started_at: SystemTime::now(),
         };
         if let Ok(Some(state)) = crate::state::load_state(assets_dir) {
             app.apply_state(state);
+        } else {
+            // No prior state for this assets dir -- this is a fresh start, so persist
+            // it immediately rather than waiting for the first navigation, so the
+            // notes window's elapsed-time clock has a start time to read right away.
+            app.persist_state();
         }
         Ok(app)
     }
@@ -109,7 +116,9 @@ impl App {
         let panel_per_topic = self.topics.iter().map(|t| t.current_panel).collect();
         let mut visited: Vec<usize> = self.visited.iter().copied().collect();
         visited.sort();
-        PresentationState { current_topic: self.current_topic, panel_per_topic, visited }
+        let started_at_epoch_secs =
+            self.started_at.duration_since(SystemTime::UNIX_EPOCH).ok().map(|d| d.as_secs());
+        PresentationState { current_topic: self.current_topic, panel_per_topic, visited, started_at_epoch_secs }
     }
 
     fn apply_state(&mut self, state: PresentationState) {
@@ -120,6 +129,9 @@ impl App {
             }
         }
         self.visited = state.visited.into_iter().collect();
+        if let Some(secs) = state.started_at_epoch_secs {
+            self.started_at = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        }
         self.screen = Screen::Topic;
     }
 
@@ -404,7 +416,9 @@ impl App {
         self.selected_lines.clear();
         self.screen = Screen::Topic;
         self.status_message = Some("State cleared — starting from the beginning".to_string());
+        self.started_at = SystemTime::now();
         let _ = crate::state::clear_state(&self.assets_dir);
+        self.persist_state();
     }
 
     pub fn tick(&mut self) {
@@ -487,6 +501,7 @@ mod tests {
             assets_dir: String::new(),
             last_poll: Instant::now(),
             last_dir_signature: (0, SystemTime::UNIX_EPOCH),
+        started_at: SystemTime::now(),
         }
     }
 
@@ -523,6 +538,7 @@ mod tests {
             assets_dir: String::new(),
             last_poll: Instant::now(),
             last_dir_signature: (0, SystemTime::UNIX_EPOCH),
+        started_at: SystemTime::now(),
         }
     }
 
@@ -549,6 +565,7 @@ mod tests {
             current_topic: 1,
             panel_per_topic: vec![2, 1],
             visited: vec![0, 1],
+            started_at_epoch_secs: Some(1_600_000_000),
         };
         app.apply_state(state);
         assert_eq!(app.current_topic, 1);
@@ -557,6 +574,11 @@ mod tests {
         assert!(app.visited.contains(&0));
         assert!(app.visited.contains(&1));
         assert_eq!(app.screen, Screen::Topic);
+        assert_eq!(
+            app.started_at.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
+            1_600_000_000,
+            "should adopt the persisted start time rather than resetting it"
+        );
     }
 
     #[test]
@@ -566,6 +588,7 @@ mod tests {
             current_topic: 0,
             panel_per_topic: vec![99],
             visited: vec![0],
+            started_at_epoch_secs: None,
         };
         app.apply_state(state);
         assert_eq!(app.topics[0].current_panel, 1, "clamped to last panel index");
@@ -734,6 +757,7 @@ mod tests {
             assets_dir: String::new(),
             last_poll: Instant::now(),
             last_dir_signature: (0, SystemTime::UNIX_EPOCH),
+        started_at: SystemTime::now(),
         }
     }
 
@@ -931,6 +955,92 @@ mod tests {
         assert_eq!(app.current_topic, 1, "current topic should be preserved");
         assert_eq!(app.topics[0].current_panel, 1, "other topics' panel position should be preserved");
         assert_eq!(app.topics[1].panels.len(), 2, "should pick up the new panel");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn new_persists_a_fresh_started_at_when_no_prior_state_exists() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir("fresh-started-at");
+        write_panel(&dir.join("01-topic"), "1", "a");
+        let _ = crate::state::clear_state(dir.to_str().unwrap());
+
+        let before = SystemTime::now();
+        let app = App::new(dir.to_str().unwrap()).unwrap();
+        let after = SystemTime::now();
+
+        assert!(
+            app.started_at >= before && app.started_at <= after,
+            "started_at should be set to roughly now on a fresh start"
+        );
+        let persisted = crate::state::load_state(dir.to_str().unwrap())
+            .unwrap()
+            .expect("a fresh state should be persisted immediately, not only on first navigation");
+        assert!(
+            persisted.started_at_epoch_secs.is_some(),
+            "persisted state should capture the presentation start time"
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn new_keeps_the_persisted_started_at_instead_of_resetting_it() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir("keeps-started-at");
+        write_panel(&dir.join("01-topic"), "1", "a");
+        crate::state::save_state(
+            dir.to_str().unwrap(),
+            &PresentationState {
+                current_topic: 0,
+                panel_per_topic: vec![0],
+                visited: vec![0],
+                started_at_epoch_secs: Some(1_600_000_000),
+            },
+        )
+        .unwrap();
+
+        let app = App::new(dir.to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            app.started_at.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
+            1_600_000_000,
+            "resuming a presentation should not reset its start time"
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn reset_sets_a_new_started_at_and_persists_it_immediately() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir("reset-started-at");
+        write_panel(&dir.join("01-topic"), "1", "a");
+        crate::state::save_state(
+            dir.to_str().unwrap(),
+            &PresentationState {
+                current_topic: 0,
+                panel_per_topic: vec![0],
+                visited: vec![0],
+                started_at_epoch_secs: Some(1_600_000_000),
+            },
+        )
+        .unwrap();
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        let before = SystemTime::now();
+        app.handle_key(KeyCode::Char('R'));
+        let after = SystemTime::now();
+
+        assert!(
+            app.started_at >= before && app.started_at <= after,
+            "reset should set started_at to roughly now, not keep the old value"
+        );
+        let persisted = crate::state::load_state(dir.to_str().unwrap())
+            .unwrap()
+            .expect("reset should persist the new started_at immediately");
+        assert_eq!(
+            persisted.started_at_epoch_secs,
+            app.started_at.duration_since(SystemTime::UNIX_EPOCH).ok().map(|d| d.as_secs())
+        );
         cleanup(&dir);
     }
 }

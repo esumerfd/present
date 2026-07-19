@@ -309,17 +309,22 @@ pub fn render_notes(f: &mut Frame, app: &NotesApp) {
     let area = f.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(4), Constraint::Length(3)])
+        .constraints([Constraint::Length(5), Constraint::Min(4), Constraint::Length(3)])
         .split(area);
 
     let header_block = Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray));
     let header_inner = header_block.inner(chunks[0]);
     f.render_widget(header_block, chunks[0]);
 
+    let header_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(header_inner);
+
     let header_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(10)])
-        .split(header_inner);
+        .constraints([Constraint::Min(0), Constraint::Length(32)])
+        .split(header_rows[0]);
 
     let topic_label = app.current_topic_label().unwrap_or("(no topic)");
     let panel_number = app.current_panel.saturating_add(1);
@@ -328,21 +333,32 @@ pub fn render_notes(f: &mut Frame, app: &NotesApp) {
         .get(app.current_topic)
         .map(|t| t.panels.len())
         .unwrap_or(0);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            format!(" {topic_label} — Panel {panel_number} of {panel_total}"),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        )),
-        header_cols[0],
-    );
+
+    let big_title = BigText::builder()
+        .pixel_size(PixelSize::Sextant)
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .lines(vec![Line::from(topic_label.to_string())])
+        .build();
+    f.render_widget(big_title, header_cols[0]);
+
+    let elapsed_text = match app.started_at {
+        Some(started_at) => format_elapsed(started_at.elapsed().unwrap_or_default()),
+        None => "--:--".to_string(),
+    };
+    let big_clock = BigText::builder()
+        .pixel_size(PixelSize::Sextant)
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .lines(vec![Line::from(elapsed_text)])
+        .right_aligned()
+        .build();
+    f.render_widget(big_clock, header_cols[1]);
 
     f.render_widget(
         Paragraph::new(Span::styled(
-            format!("{} ", format_elapsed(app.started_at.elapsed())),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ))
-        .alignment(Alignment::Right),
-        header_cols[1],
+            format!(" Panel {panel_number} of {panel_total}"),
+            Style::default().fg(Color::DarkGray),
+        )),
+        header_rows[1],
     );
 
     let notes_content = app
@@ -930,7 +946,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assets::Asset;
+    use crate::assets::{Asset, Topic};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::path::PathBuf;
@@ -947,33 +963,88 @@ mod tests {
         assert_eq!(format_elapsed(Duration::from_secs(3661)), "1:01:01");
     }
 
-    #[test]
-    fn render_notes_shows_elapsed_clock_in_top_right() {
-        let app = NotesApp {
-            topics: vec![],
+    fn notes_app_with_topic(label: &str, started_at: Option<std::time::SystemTime>) -> NotesApp {
+        let topic = Topic {
+            name: "topic".to_string(),
+            label: label.to_string(),
+            panels: vec![Panel { assets: vec![] }],
+            current_panel: 0,
+        };
+        NotesApp {
+            topics: vec![topic],
             assets_dir: String::new(),
             current_topic: 0,
             current_panel: 0,
             last_asset_poll: Instant::now(),
             last_state_poll: Instant::now(),
             last_dir_signature: (0, std::time::SystemTime::UNIX_EPOCH),
-            started_at: Instant::now() - Duration::from_secs(75),
-        };
-        let backend = TestBackend::new(50, 12);
+            started_at,
+        }
+    }
+
+    /// Block Elements (U+2580-259F) and Symbols for Legacy Computing (U+1FB00-1FBFF),
+    /// the Unicode ranges tui-big-text draws glyph pixels with -- distinct from
+    /// ordinary punctuation like an em dash, which is also non-ASCII.
+    fn is_big_text_glyph(c: char) -> bool {
+        matches!(c as u32, 0x2580..=0x259F | 0x1FB00..=0x1FBFF)
+    }
+
+    fn has_big_text_glyph(row: &str) -> bool {
+        row.chars().any(is_big_text_glyph)
+    }
+
+    #[test]
+    fn render_notes_title_renders_as_big_text() {
+        let app = notes_app_with_topic("Story", Some(std::time::SystemTime::now()));
+        let backend = TestBackend::new(80, 16);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| render_notes(f, &app)).unwrap();
         let buffer = terminal.backend().buffer();
 
-        let header_row = row_text(buffer, 0);
-        assert!(
-            header_row.contains("01:15"),
-            "expected elapsed clock '01:15' in the header row, got: {header_row:?}"
-        );
-        let clock_col = header_row.find("01:15").unwrap();
-        assert!(
-            clock_col > 30,
-            "clock should be right-aligned near the edge of a 50-wide frame, got col {clock_col}"
-        );
+        let has_glyphs = (0..3).any(|y| has_big_text_glyph(&row_text(buffer, y)));
+        assert!(has_glyphs, "expected big-text glyph pixels for the topic title in the header rows");
+    }
+
+    #[test]
+    fn render_notes_shows_elapsed_clock_as_big_text_in_top_right() {
+        let app = notes_app_with_topic("Story", Some(std::time::SystemTime::now() - Duration::from_secs(75)));
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_notes(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let has_glyphs_on_right = (0..3).any(|y| {
+            let row = row_text(buffer, y);
+            row.chars().skip(50).any(is_big_text_glyph)
+        });
+        assert!(has_glyphs_on_right, "expected big-text glyph pixels for the elapsed clock on the right of the header");
+    }
+
+    #[test]
+    fn render_notes_shows_placeholder_clock_before_state_has_synced() {
+        let app = notes_app_with_topic("Story", None);
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_notes(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let has_glyphs_on_right = (0..3).any(|y| {
+            let row = row_text(buffer, y);
+            row.chars().skip(50).any(is_big_text_glyph)
+        });
+        assert!(has_glyphs_on_right, "expected a big-text placeholder clock before started_at is known");
+    }
+
+    #[test]
+    fn render_notes_still_shows_panel_count_as_small_text_below_the_title() {
+        let app = notes_app_with_topic("Story", Some(std::time::SystemTime::now()));
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_notes(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let has_panel_count = (0..5).any(|y| row_text(buffer, y).contains("Panel 1 of 1"));
+        assert!(has_panel_count, "expected small-text panel count below the big title");
     }
 
     fn text_and_word_cloud_panel(text: &str, cloud_title: &str, words: &[&str]) -> Panel {
