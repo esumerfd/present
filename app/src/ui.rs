@@ -292,12 +292,34 @@ fn render_topic(f: &mut Frame, app: &App, iterm2_supported: bool) -> Option<Pend
     pending
 }
 
+/// Formats an elapsed duration as `MM:SS`, or `H:MM:SS` once it reaches an hour.
+fn format_elapsed(elapsed: std::time::Duration) -> String {
+    let total_secs = elapsed.as_secs();
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
+}
+
 pub fn render_notes(f: &mut Frame, app: &NotesApp) {
     let area = f.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(4), Constraint::Length(3)])
         .split(area);
+
+    let header_block = Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray));
+    let header_inner = header_block.inner(chunks[0]);
+    f.render_widget(header_block, chunks[0]);
+
+    let header_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(10)])
+        .split(header_inner);
 
     let topic_label = app.current_topic_label().unwrap_or("(no topic)");
     let panel_number = app.current_panel.saturating_add(1);
@@ -310,9 +332,17 @@ pub fn render_notes(f: &mut Frame, app: &NotesApp) {
         Paragraph::new(Span::styled(
             format!(" {topic_label} — Panel {panel_number} of {panel_total}"),
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        header_cols[0],
+    );
+
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            format!("{} ", format_elapsed(app.started_at.elapsed())),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ))
-        .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray))),
-        chunks[0],
+        .alignment(Alignment::Right),
+        header_cols[1],
     );
 
     let notes_content = app
@@ -904,6 +934,47 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn format_elapsed_formats_minutes_and_seconds_under_an_hour() {
+        assert_eq!(format_elapsed(Duration::from_secs(5)), "00:05");
+        assert_eq!(format_elapsed(Duration::from_secs(65)), "01:05");
+    }
+
+    #[test]
+    fn format_elapsed_formats_hours_when_an_hour_or_more() {
+        assert_eq!(format_elapsed(Duration::from_secs(3661)), "1:01:01");
+    }
+
+    #[test]
+    fn render_notes_shows_elapsed_clock_in_top_right() {
+        let app = NotesApp {
+            topics: vec![],
+            assets_dir: String::new(),
+            current_topic: 0,
+            current_panel: 0,
+            last_asset_poll: Instant::now(),
+            last_state_poll: Instant::now(),
+            last_dir_signature: (0, std::time::SystemTime::UNIX_EPOCH),
+            started_at: Instant::now() - Duration::from_secs(75),
+        };
+        let backend = TestBackend::new(50, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_notes(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let header_row = row_text(buffer, 0);
+        assert!(
+            header_row.contains("01:15"),
+            "expected elapsed clock '01:15' in the header row, got: {header_row:?}"
+        );
+        let clock_col = header_row.find("01:15").unwrap();
+        assert!(
+            clock_col > 30,
+            "clock should be right-aligned near the edge of a 50-wide frame, got col {clock_col}"
+        );
+    }
 
     fn text_and_word_cloud_panel(text: &str, cloud_title: &str, words: &[&str]) -> Panel {
         word_cloud_panel_with_size(text, cloud_title, words, WordCloudSize::default())

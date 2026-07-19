@@ -14,6 +14,7 @@ pub struct NotesApp {
     pub last_asset_poll: Instant,
     pub last_state_poll: Instant,
     pub last_dir_signature: (usize, SystemTime),
+    pub started_at: Instant,
 }
 
 impl NotesApp {
@@ -29,6 +30,7 @@ impl NotesApp {
             last_asset_poll: Instant::now(),
             last_state_poll: Instant::now(),
             last_dir_signature,
+            started_at: Instant::now(),
         };
         app.sync_position();
         Ok(app)
