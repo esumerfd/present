@@ -203,7 +203,7 @@ pub fn swap_panels(assets_dir: &str, topic: &mut Topic, index_a: usize, index_b:
     Ok(())
 }
 
-fn panel_dir_name(panel: &Panel) -> Option<String> {
+pub fn panel_dir_name(panel: &Panel) -> Option<String> {
     panel
         .assets
         .first()

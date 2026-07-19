@@ -151,3 +151,5 @@ Slow down here. Make eye contact before advancing.
 | `V` | Open the panel's markdown files in `nvim`, as horizontal splits (`text.md` on top, the rest alphabetically below), cwd'd into the assets dir |
 | `H` | Move the current panel earlier — swaps its directory number with the previous panel's. No-op on the first panel |
 | `L` | Move the current panel later — swaps its directory number with the next panel's. No-op on the last panel |
+
+If the assets dir is inside a git repo, `V`, `H`, and `L` each commit their own change automatically once done — scoped to only the panel folder(s) involved, never the whole repo. `V` commits whatever nvim left changed in the panel's directory (a no-op if nothing changed). `H`/`L` commit the two swapped panel directories together; git's own rename detection will show these as renames as long as the two panels don't share an identical filename (e.g. both having their own `text.md` with different content shows as two modifications instead, which is a git limitation, not a bug).

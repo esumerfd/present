@@ -3,6 +3,7 @@ mod assets;
 mod claude;
 mod export;
 mod firework;
+mod git;
 mod iterm2;
 mod markdown;
 mod mermaid;
@@ -254,13 +255,17 @@ where
                     }
                     if let Some(launch) = app.pending_editor.take() {
                         match run_editor(terminal, &launch)? {
-                            Ok(status) if !status.success() => {
-                                app.status_message = Some(format!("nvim exited with {status}"));
+                            Ok(status) => {
+                                if !status.success() {
+                                    app.status_message = Some(format!("nvim exited with {status}"));
+                                }
+                                // Whatever nvim left behind, commit it -- a no-op if
+                                // nothing actually changed under the panel's dir.
+                                app.commit_editor_changes(&launch);
                             }
                             Err(e) => {
                                 app.status_message = Some(format!("Failed to launch nvim: {e}"));
                             }
-                            Ok(_) => {}
                         }
                         // nvim owned the real screen; force a full repaint (and, if
                         // the current panel has one, a fresh image write) next frame.

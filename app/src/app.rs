@@ -13,6 +13,9 @@ use std::time::{Instant, SystemTime};
 pub struct EditorLaunch {
     pub cwd: PathBuf,
     pub args: Vec<String>,
+    /// The edited panel's directory, relative to the assets dir (e.g. `01-topic/1`),
+    /// for scoping the post-edit git commit to just that folder.
+    pub panel_rel_dir: String,
 }
 
 fn dbg(msg: &str) {
@@ -84,6 +87,7 @@ pub struct App {
     pub started_at: SystemTime,
     pub pending_editor: Option<EditorLaunch>,
     sender: Box<dyn crate::claude::ClaudeSender>,
+    git: Box<dyn crate::git::GitCommitter>,
 }
 
 impl App {
@@ -114,6 +118,7 @@ impl App {
             started_at: SystemTime::now(),
             pending_editor: None,
             sender: Box::new(crate::claude::RealSender),
+            git: Box::new(crate::git::RealGit),
         };
         if let Ok(Some(state)) = crate::state::load_state(assets_dir) {
             app.apply_state(state);
@@ -435,18 +440,34 @@ impl App {
     }
 
     fn nvim_launch(&self) -> Option<EditorLaunch> {
-        let panel = self.topics.get(self.current_topic)?.current_panel()?;
+        let topic = self.topics.get(self.current_topic)?;
+        let panel = topic.current_panel()?;
         let md_paths = panel.markdown_paths();
         if md_paths.is_empty() {
             return None;
         }
+        let panel_dir = crate::assets::panel_dir_name(panel)?;
         let mut args = vec!["-o".to_string()];
         for path in &md_paths {
             let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
             args.push(absolute.to_string_lossy().to_string());
         }
         let cwd = std::fs::canonicalize(&self.assets_dir).unwrap_or_else(|_| PathBuf::from(&self.assets_dir));
-        Some(EditorLaunch { cwd, args })
+        Some(EditorLaunch { cwd, args, panel_rel_dir: format!("{}/{panel_dir}", topic.name) })
+    }
+
+    /// Commits whatever changes nvim left in the edited panel's directory, scoped so
+    /// nothing else in the working tree is touched. No-op when `assets_dir` isn't a
+    /// git repo, or when nvim didn't actually change anything.
+    pub fn commit_editor_changes(&mut self, launch: &EditorLaunch) {
+        if !self.git.is_repo(&self.assets_dir) {
+            return;
+        }
+        let paths = vec![launch.panel_rel_dir.clone()];
+        let message = format!("Edit panel {}", launch.panel_rel_dir);
+        if let Err(e) = self.git.commit_paths(&self.assets_dir, &paths, &message) {
+            self.status_message = Some(format!("Git commit failed: {e}"));
+        }
     }
 
     /// Swaps the current panel's on-disk directory number with its previous
@@ -454,20 +475,43 @@ impl App {
     /// and moves the cursor along with it so the presenter keeps viewing the same
     /// content. A no-op at either end of the panel list.
     fn reorder_panel(&mut self, direction: i32) {
-        let Some(topic) = self.topics.get_mut(self.current_topic) else { return };
+        let Some(topic) = self.topics.get(self.current_topic) else { return };
         let current = topic.current_panel;
         let Some(target) = current.checked_add_signed(direction as isize) else { return };
         if target >= topic.panels.len() {
             return;
         }
+        let topic_name = topic.name.clone();
+        let Some(dir_a) = crate::assets::panel_dir_name(&topic.panels[current]) else { return };
+        let Some(dir_b) = crate::assets::panel_dir_name(&topic.panels[target]) else { return };
+
+        let Some(topic) = self.topics.get_mut(self.current_topic) else { return };
         match crate::assets::swap_panels(&self.assets_dir, topic, current, target) {
             Ok(()) => {
                 topic.current_panel = target;
-                self.persist_state();
             }
             Err(e) => {
                 self.status_message = Some(format!("Failed to reorder panel: {e}"));
+                return;
             }
+        }
+        self.persist_state();
+        self.commit_reorder(&topic_name, &dir_a, &dir_b);
+    }
+
+    /// Commits the two panel directories swapped by `reorder_panel`, scoped so
+    /// nothing else in the working tree is touched. No-op when `assets_dir` isn't a
+    /// git repo. Directory *names* stay the same across the swap (only their content
+    /// trades places), but git's own rename detection still recognizes it correctly
+    /// per-file, as long as the two panels don't share an identical filename.
+    fn commit_reorder(&mut self, topic_name: &str, dir_a: &str, dir_b: &str) {
+        if !self.git.is_repo(&self.assets_dir) {
+            return;
+        }
+        let paths = vec![format!("{topic_name}/{dir_a}"), format!("{topic_name}/{dir_b}")];
+        let message = format!("Swap panels {dir_a} and {dir_b}");
+        if let Err(e) = self.git.commit_paths(&self.assets_dir, &paths, &message) {
+            self.status_message = Some(format!("Git commit failed: {e}"));
         }
     }
 
@@ -570,6 +614,7 @@ mod tests {
         started_at: SystemTime::now(),
         pending_editor: None,
         sender: Box::new(crate::claude::NoopSender),
+        git: Box::new(crate::git::NoopGit),
         }
     }
 
@@ -609,6 +654,7 @@ mod tests {
         started_at: SystemTime::now(),
         pending_editor: None,
         sender: Box::new(crate::claude::NoopSender),
+        git: Box::new(crate::git::NoopGit),
         }
     }
 
@@ -830,6 +876,7 @@ mod tests {
         started_at: SystemTime::now(),
         pending_editor: None,
         sender: Box::new(crate::claude::NoopSender),
+        git: Box::new(crate::git::NoopGit),
         }
     }
 
@@ -854,6 +901,84 @@ mod tests {
             .map(|f| std::fs::canonicalize(panel_dir.join(f)).unwrap().to_string_lossy().to_string())
             .collect();
         assert_eq!(launch.args, [vec!["-o".to_string()], expected].concat());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn capital_v_commits_the_edited_panel_when_assets_dir_is_a_git_repo() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir("editor-commit-spy");
+        let panel_dir = dir.join("01-topic").join("1");
+        std::fs::create_dir_all(&panel_dir).unwrap();
+        std::fs::write(panel_dir.join("text.md"), "body").unwrap();
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+        app.handle_key(KeyCode::Char('V'));
+        let launch = app.pending_editor.take().expect("should build a launch");
+
+        let spy = std::rc::Rc::new(SpyGit::default());
+        app.git = Box::new(SpyGitHandle(spy.clone()));
+        app.commit_editor_changes(&launch);
+
+        let calls = spy.calls.borrow();
+        assert_eq!(calls.len(), 1, "expected exactly one git commit call, got: {calls:?}");
+        let (call_dir, paths, message) = &calls[0];
+        assert_eq!(call_dir, dir.to_str().unwrap());
+        assert_eq!(paths, &vec!["01-topic/1".to_string()]);
+        assert!(message.contains("01-topic/1"), "message should mention the panel dir: {message}");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn capital_v_creates_a_real_git_commit_scoped_to_the_edited_panel() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir("editor-commit-real-git");
+        let panel_dir = dir.join("01-topic").join("1");
+        std::fs::create_dir_all(&panel_dir).unwrap();
+        std::fs::write(panel_dir.join("text.md"), "body").unwrap();
+        let other_dir = dir.join("01-topic").join("2");
+        std::fs::create_dir_all(&other_dir).unwrap();
+        std::fs::write(other_dir.join("text.md"), "untouched").unwrap();
+        init_git_repo(&dir);
+        git_commit_all(&dir, "Initial");
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+        app.handle_key(KeyCode::Char('V'));
+        let launch = app.pending_editor.take().expect("should build a launch");
+
+        // Simulate the edit nvim would have made.
+        std::fs::write(panel_dir.join("text.md"), "edited body").unwrap();
+        app.commit_editor_changes(&launch);
+
+        let subject = git_log_subject(&dir);
+        assert!(subject.contains("01-topic/1"), "commit subject should mention the edited panel: {subject}");
+        let changed = git_show_name_only(&dir);
+        assert!(changed.contains("01-topic/1/text.md"), "commit should touch the edited panel: {changed}");
+        assert!(!changed.contains("01-topic/2"), "commit should not touch the other panel: {changed}");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn capital_v_does_not_commit_when_nvim_made_no_changes() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir("editor-commit-noop");
+        let panel_dir = dir.join("01-topic").join("1");
+        std::fs::create_dir_all(&panel_dir).unwrap();
+        std::fs::write(panel_dir.join("text.md"), "body").unwrap();
+        init_git_repo(&dir);
+        git_commit_all(&dir, "Initial");
+        let count_before = git_log_line_count(&dir);
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+        app.handle_key(KeyCode::Char('V'));
+        let launch = app.pending_editor.take().expect("should build a launch");
+
+        app.commit_editor_changes(&launch);
+
+        assert_eq!(git_log_line_count(&dir), count_before, "no commit should be made when nothing changed");
         cleanup(&dir);
     }
 
@@ -902,6 +1027,53 @@ mod tests {
 
         assert_eq!(app.topics[0].current_panel, 0, "cursor should follow panel 20 to its new position");
         assert_eq!(panel_text_contents(&app), vec!["content-20", "content-10", "content-30"]);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn capital_h_commits_the_swap_when_assets_dir_is_a_git_repo() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir_with_numbered_panels("reorder-h-git-spy", &["10", "20", "30"]);
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+        app.topics[0].current_panel = 1;
+        let spy = std::rc::Rc::new(SpyGit::default());
+        app.git = Box::new(SpyGitHandle(spy.clone()));
+
+        app.handle_key(KeyCode::Char('H'));
+
+        let calls = spy.calls.borrow();
+        assert_eq!(calls.len(), 1, "expected exactly one git commit call, got: {calls:?}");
+        let (call_dir, paths, message) = &calls[0];
+        assert_eq!(call_dir, dir.to_str().unwrap());
+        let mut sorted_paths = paths.clone();
+        sorted_paths.sort();
+        assert_eq!(sorted_paths, vec!["01-topic/10".to_string(), "01-topic/20".to_string()]);
+        assert!(message.contains("10") && message.contains("20"), "message should mention both panels: {message}");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn capital_h_creates_a_real_git_commit_scoped_to_the_swapped_panels() {
+        let _guard = crate::state::test_lock();
+        let dir = tempdir_with_numbered_panels("reorder-h-real-git", &["10", "20", "30"]);
+        init_git_repo(&dir);
+        git_commit_all(&dir, "Initial");
+
+        let mut app = App::new(dir.to_str().unwrap()).unwrap();
+        app.screen = Screen::Topic;
+        app.topics[0].current_panel = 1;
+
+        app.handle_key(KeyCode::Char('H'));
+
+        let subject = git_log_subject(&dir);
+        assert!(subject.contains("10") && subject.contains("20"), "commit subject should mention the swapped panels: {subject}");
+
+        let changed = git_show_name_only(&dir);
+        assert!(changed.contains("01-topic/10"), "commit should touch panel 10: {changed}");
+        assert!(changed.contains("01-topic/20"), "commit should touch panel 20: {changed}");
+        assert!(!changed.contains("01-topic/30"), "commit should not touch the untouched panel: {changed}");
         cleanup(&dir);
     }
 
@@ -1095,6 +1267,83 @@ mod tests {
 
     fn cleanup(dir: &std::path::Path) {
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn init_git_repo(dir: &std::path::Path) {
+        assert!(std::process::Command::new("git").arg("init").arg("-q").current_dir(dir).status().unwrap().success());
+        assert!(std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    fn git_commit_all(dir: &std::path::Path, message: &str) {
+        assert!(std::process::Command::new("git").arg("add").arg("-A").current_dir(dir).status().unwrap().success());
+        assert!(std::process::Command::new("git")
+            .arg("commit")
+            .arg("-q")
+            .arg("-m")
+            .arg(message)
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    fn git_log_line_count(dir: &std::path::Path) -> usize {
+        let output = std::process::Command::new("git")
+            .args(["log", "--oneline"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        if !output.status.success() {
+            return 0;
+        }
+        String::from_utf8_lossy(&output.stdout).lines().count()
+    }
+
+    fn git_log_subject(dir: &std::path::Path) -> String {
+        let output = std::process::Command::new("git")
+            .args(["log", "-1", "--pretty=%s"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn git_show_name_only(dir: &std::path::Path) -> String {
+        let output = std::process::Command::new("git")
+            .args(["show", "--stat", "--name-only", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).to_string()
+    }
+
+    #[derive(Default)]
+    struct SpyGit {
+        calls: RefCell<Vec<(String, Vec<String>, String)>>,
+    }
+
+    struct SpyGitHandle(std::rc::Rc<SpyGit>);
+
+    impl crate::git::GitCommitter for SpyGitHandle {
+        fn is_repo(&self, _dir: &str) -> bool {
+            true
+        }
+
+        fn commit_paths(&self, dir: &str, paths: &[String], message: &str) -> anyhow::Result<bool> {
+            self.0.calls.borrow_mut().push((dir.to_string(), paths.to_vec(), message.to_string()));
+            Ok(true)
+        }
     }
 
     fn write_panel(topic_dir: &std::path::Path, panel: &str, text: &str) {
