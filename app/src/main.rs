@@ -175,6 +175,13 @@ where
     }
 }
 
+/// Whether to wipe the real terminal before drawing this frame, to clear stale image
+/// bytes from an earlier raw OSC write that ratatui's own buffer diffing doesn't know
+/// about.
+fn should_clear_stale_image(had_image_escape: bool, panel_has_image: bool, panel_changed: bool) -> bool {
+    had_image_escape && (!panel_has_image || panel_changed)
+}
+
 fn run_app<B: ratatui::backend::Backend + std::io::Write>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -190,6 +197,7 @@ where
     // idea these raw-painted pixels exist.
     let mut last_image_escape: Option<String> = None;
     let mut last_screen: Option<Screen> = None;
+    let mut last_panel_position: Option<(usize, usize)> = None;
 
     loop {
         let panel_has_image = app.screen == Screen::Topic
@@ -200,14 +208,22 @@ where
                 .map(|p| p.has_image())
                 .unwrap_or(false);
 
-        // If this frame's panel won't have an image, wipe the real terminal *before*
-        // drawing so any stale image bytes left by an earlier raw write are cleared
-        // and the fresh content below lands on a clean screen in the same pass --
-        // clearing after the draw would flash the just-drawn frame blank for a tick.
-        if !panel_has_image {
-            if last_image_escape.is_some() {
-                terminal.clear()?;
-            }
+        let panel_position = (app.screen == Screen::Topic)
+            .then(|| app.topics.get(app.current_topic).map(|t| (app.current_topic, t.current_panel)))
+            .flatten();
+        let panel_changed = panel_position != last_panel_position;
+        last_panel_position = panel_position;
+
+        // If this frame's panel won't have an image, or the panel changed since the
+        // last image was painted, wipe the real terminal *before* drawing so any stale
+        // image bytes left by an earlier raw write are cleared and the fresh content
+        // lands on a clean screen in the same pass -- clearing after the draw would
+        // flash the just-drawn frame blank for a tick. The panel-changed case matters
+        // even between two image-bearing panels: the image Rect can move (e.g. a
+        // shrink-to-fit text block above it grows or shrinks), so the old pixels can
+        // sit outside the new image's coordinates and never get overwritten.
+        if should_clear_stale_image(last_image_escape.is_some(), panel_has_image, panel_changed) {
+            terminal.clear()?;
             last_image_escape = None;
         }
 
@@ -261,6 +277,29 @@ fn paint_image<B: ratatui::backend::Backend + std::io::Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_clear_stale_image_when_new_panel_has_no_image() {
+        assert!(should_clear_stale_image(true, false, false));
+    }
+
+    #[test]
+    fn should_clear_stale_image_when_panel_changed_even_if_new_panel_has_an_image() {
+        // The image Rect can move between two image-bearing panels (e.g. shrink-to-fit
+        // text above it grows/shrinks), so a same-has-image panel change must still clear.
+        assert!(should_clear_stale_image(true, true, true));
+    }
+
+    #[test]
+    fn should_not_clear_stale_image_when_same_panel_still_has_the_same_image() {
+        assert!(!should_clear_stale_image(true, true, false));
+    }
+
+    #[test]
+    fn should_not_clear_when_nothing_was_ever_painted() {
+        assert!(!should_clear_stale_image(false, false, false));
+        assert!(!should_clear_stale_image(false, true, true));
+    }
 
     #[test]
     fn help_short_flag() {
