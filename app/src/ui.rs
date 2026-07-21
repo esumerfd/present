@@ -292,16 +292,16 @@ fn render_topic(f: &mut Frame, app: &App, iterm2_supported: bool) -> Option<Pend
     pending
 }
 
-/// Formats an elapsed duration as `MM:SS`, or `H:MM:SS` once it reaches an hour.
+/// Formats an elapsed duration as `Xm Ys`, or `Zh Xm Ys` once it reaches an hour.
 fn format_elapsed(elapsed: std::time::Duration) -> String {
     let total_secs = elapsed.as_secs();
     let hours = total_secs / 3600;
     let minutes = (total_secs % 3600) / 60;
     let seconds = total_secs % 60;
     if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
+        format!("{hours}h {minutes}m {seconds}s")
     } else {
-        format!("{minutes:02}:{seconds:02}")
+        format!("{minutes}m {seconds}s")
     }
 }
 
@@ -1015,13 +1015,13 @@ mod tests {
 
     #[test]
     fn format_elapsed_formats_minutes_and_seconds_under_an_hour() {
-        assert_eq!(format_elapsed(Duration::from_secs(5)), "00:05");
-        assert_eq!(format_elapsed(Duration::from_secs(65)), "01:05");
+        assert_eq!(format_elapsed(Duration::from_secs(5)), "0m 5s");
+        assert_eq!(format_elapsed(Duration::from_secs(65)), "1m 5s");
     }
 
     #[test]
     fn format_elapsed_formats_hours_when_an_hour_or_more() {
-        assert_eq!(format_elapsed(Duration::from_secs(3661)), "1:01:01");
+        assert_eq!(format_elapsed(Duration::from_secs(3661)), "1h 1m 1s");
     }
 
     fn notes_app_with_topic(label: &str, started_at: Option<std::time::SystemTime>) -> NotesApp {
