@@ -327,6 +327,8 @@ pub fn render_notes(f: &mut Frame, app: &NotesApp) {
         .split(header_rows[0]);
 
     let topic_label = app.current_topic_label().unwrap_or("(no topic)");
+    let topic_number = app.current_topic.saturating_add(1);
+    let topic_total = app.topics.len();
     let panel_number = app.current_panel.saturating_add(1);
     let panel_total = app
         .topics
@@ -355,7 +357,7 @@ pub fn render_notes(f: &mut Frame, app: &NotesApp) {
 
     f.render_widget(
         Paragraph::new(Span::styled(
-            format!(" Panel {panel_number} of {panel_total}"),
+            format!(" TOPIC {topic_number} of {topic_total}  Panel {panel_number} of {panel_total}"),
             Style::default().fg(Color::DarkGray),
         )),
         header_rows[1],
@@ -1104,6 +1106,34 @@ mod tests {
 
         let has_panel_count = (0..5).any(|y| row_text(buffer, y).contains("Panel 1 of 1"));
         assert!(has_panel_count, "expected small-text panel count below the big title");
+    }
+
+    #[test]
+    fn render_notes_shows_topic_count_alongside_panel_count() {
+        let topic_a = Topic { name: "a".to_string(), label: "A".to_string(), panels: vec![Panel { assets: vec![] }], current_panel: 0 };
+        let topic_b = Topic {
+            name: "b".to_string(),
+            label: "Story Timeline".to_string(),
+            panels: vec![Panel { assets: vec![] }; 8],
+            current_panel: 0,
+        };
+        let app = NotesApp {
+            topics: vec![topic_a, topic_b],
+            assets_dir: String::new(),
+            current_topic: 1,
+            current_panel: 0,
+            last_asset_poll: Instant::now(),
+            last_state_poll: Instant::now(),
+            last_dir_signature: (0, std::time::SystemTime::UNIX_EPOCH),
+            started_at: None,
+        };
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_notes(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let has_topic_count = (0..5).any(|y| row_text(buffer, y).contains("TOPIC 2 of 2"));
+        assert!(has_topic_count, "expected TOPIC 2 of 2 alongside the panel count in the notes header");
     }
 
     fn text_and_word_cloud_panel(text: &str, cloud_title: &str, words: &[&str]) -> Panel {
