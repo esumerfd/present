@@ -399,7 +399,7 @@ fn render_panel(
     selected_lines: &HashSet<usize>,
     iterm2_supported: bool,
 ) -> Option<PendingImage> {
-    let has_text       = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Text { .. }));
+    let has_text       = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Text { .. } | AssetKind::TextCentered { .. }));
     let has_diagram    = panel.assets.iter().any(|a| matches!(a.kind, AssetKind::Diagram { .. }));
     let has_prompt     = panel.has_prompt();
     let has_word_cloud = panel.has_word_cloud();
@@ -557,32 +557,87 @@ fn render_image_asset(f: &mut Frame, panel: &Panel, area: Rect, iterm2_supported
 /// Height (including top/bottom border) the text panel needs to fit its wrapped
 /// content at the given width, so the image below it can claim the rest of `max_height`.
 fn text_asset_fit_height(panel: &Panel, width: u16, max_height: u16) -> u16 {
-    let Some(asset) = panel.assets.iter().find(|a| matches!(a.kind, AssetKind::Text { .. })) else {
+    let Some(asset) = panel.assets.iter().find(|a| matches!(a.kind, AssetKind::Text { .. } | AssetKind::TextCentered { .. })) else {
         return 0;
     };
-    let AssetKind::Text { content } = &asset.kind else { return 0 };
-    let lines = crate::markdown::render_to_lines(content);
     let inner_width = width.saturating_sub(2).max(1) as usize;
-    let wrapped_rows: usize = lines
-        .iter()
-        .map(|line| {
-            let w = line.width();
-            if w == 0 { 1 } else { w.div_ceil(inner_width) }
-        })
-        .sum();
+    let wrapped_rows: usize = match &asset.kind {
+        AssetKind::Text { content } => crate::markdown::render_to_lines(content)
+            .iter()
+            .map(|line| {
+                let w = line.width();
+                if w == 0 { 1 } else { w.div_ceil(inner_width) }
+            })
+            .sum(),
+        AssetKind::TextCentered { content } => {
+            centered_text_lines(content).len() * BIG_TEXT_ROWS_PER_LINE as usize
+        }
+        _ => 0,
+    };
     (wrapped_rows as u16 + 2).clamp(3, max_height.saturating_sub(1).max(3))
 }
 
 fn render_text_asset(f: &mut Frame, panel: &Panel, area: Rect) {
-    let Some(asset) = panel.assets.iter().find(|a| matches!(a.kind, AssetKind::Text { .. })) else { return };
-    let AssetKind::Text { content } = &asset.kind else { return };
-    let lines = crate::markdown::render_to_lines(content);
+    let Some(asset) = panel.assets.iter().find(|a| matches!(a.kind, AssetKind::Text { .. } | AssetKind::TextCentered { .. })) else { return };
+    match &asset.kind {
+        AssetKind::Text { content } => {
+            let lines = crate::markdown::render_to_lines(content);
+            f.render_widget(
+                Paragraph::new(lines)
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)))
+                    .wrap(Wrap { trim: false }),
+                area,
+            );
+        }
+        AssetKind::TextCentered { content } => render_text_centered_content(f, content, area),
+        _ => {}
+    }
+}
+
+/// PixelSize::Sextant packs each 8px-tall font8x8 glyph into 3 terminal rows
+/// (8 divided by its vertical step of 3, rounded up).
+const BIG_TEXT_ROWS_PER_LINE: u16 = 3;
+
+fn centered_text_lines(content: &str) -> Vec<Line<'static>> {
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| Line::from(l.to_string()))
+        .collect()
+}
+
+fn render_text_centered_content(f: &mut Frame, content: &str, area: Rect) {
     f.render_widget(
-        Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)))
-            .wrap(Wrap { trim: false }),
+        Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)),
         area,
     );
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let lines = centered_text_lines(content);
+    if lines.is_empty() {
+        return;
+    }
+
+    let text_height = (lines.len() as u16 * BIG_TEXT_ROWS_PER_LINE).min(inner.height);
+    let y_offset = (inner.height - text_height) / 2;
+    let centered = Rect { y: inner.y + y_offset, height: text_height, ..inner };
+
+    let big_text = BigText::builder()
+        .pixel_size(PixelSize::Sextant)
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .lines(lines)
+        .centered()
+        .build();
+    f.render_widget(big_text, centered);
 }
 
 /// How many terminal cells wide each character is drawn, per word-cloud size tier.
@@ -1093,6 +1148,59 @@ mod tests {
             kind: AssetKind::Text { content: content.to_string() },
         };
         Panel { assets: vec![asset] }
+    }
+
+    fn text_centered_only_panel(content: &str) -> Panel {
+        let asset = Asset {
+            path: PathBuf::from("text-centered.md"),
+            kind: AssetKind::TextCentered { content: content.to_string() },
+        };
+        Panel { assets: vec![asset] }
+    }
+
+    #[test]
+    fn text_centered_asset_renders_as_big_text() {
+        let panel = text_centered_only_panel("STACK");
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_panel(f, &panel, area, 0, &HashSet::new(), false);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let has_glyphs = (0..buffer.area.height).any(|y| has_big_text_glyph(&row_text(buffer, y)));
+        assert!(has_glyphs, "expected big-text glyph pixels for the centered panel text");
+    }
+
+    #[test]
+    fn text_centered_asset_is_horizontally_centered() {
+        let panel = text_centered_only_panel("STACK");
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_panel(f, &panel, area, 0, &HashSet::new(), false);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let glyph_row = (0..buffer.area.height)
+            .map(|y| row_text(buffer, y))
+            .find(|row| has_big_text_glyph(row))
+            .expect("expected a row with big-text glyphs");
+        let chars: Vec<char> = glyph_row.chars().collect();
+        let first = chars.iter().position(|c| is_big_text_glyph(*c)).unwrap();
+        let last = chars.iter().rposition(|c| is_big_text_glyph(*c)).unwrap();
+        let left_pad = first;
+        let right_pad = chars.len() - 1 - last;
+        assert!(
+            left_pad.abs_diff(right_pad) <= 1,
+            "expected roughly equal left/right padding, got left={left_pad} right={right_pad} row={glyph_row:?}"
+        );
     }
 
     fn text_and_image_panel(text: &str) -> Panel {

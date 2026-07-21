@@ -69,7 +69,9 @@ impl Panel {
             .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
             .collect();
         paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-        if let Some(pos) = paths.iter().position(|p| p.file_name().and_then(|n| n.to_str()) == Some("text.md")) {
+        if let Some(pos) = paths.iter().position(|p| {
+            matches!(p.file_name().and_then(|n| n.to_str()), Some("text.md") | Some("text-centered.md"))
+        }) {
             let text_md = paths.remove(pos);
             paths.insert(0, text_md);
         }
@@ -103,6 +105,9 @@ pub enum AssetKind {
         content: String,
     },
     Text {
+        content: String,
+    },
+    TextCentered {
         content: String,
     },
     WordCloud {
@@ -226,10 +231,11 @@ fn load_panels(topic_path: &Path) -> Result<Vec<Panel>> {
         let dir = entry.path();
         let mut assets = Vec::new();
 
-        let prompt_file  = dir.join("prompt.md");
-        let diagram_file = dir.join("diagram.md");
-        let text_file    = dir.join("text.md");
-        let notes_file   = dir.join("notes.md");
+        let prompt_file         = dir.join("prompt.md");
+        let diagram_file        = dir.join("diagram.md");
+        let text_file           = dir.join("text.md");
+        let text_centered_file  = dir.join("text-centered.md");
+        let notes_file          = dir.join("notes.md");
 
         if prompt_file.exists() {
             let raw = fs::read_to_string(&prompt_file)?;
@@ -247,6 +253,10 @@ fn load_panels(topic_path: &Path) -> Result<Vec<Panel>> {
         if text_file.exists() {
             let content = fs::read_to_string(&text_file)?;
             assets.push(Asset { path: text_file, kind: AssetKind::Text { content } });
+        }
+        if text_centered_file.exists() {
+            let content = fs::read_to_string(&text_centered_file)?;
+            assets.push(Asset { path: text_centered_file, kind: AssetKind::TextCentered { content } });
         }
         if notes_file.exists() {
             let content = fs::read_to_string(&notes_file)?;
@@ -665,6 +675,40 @@ mod tests {
         };
         assert_eq!(content, "Slow down on this slide.\n");
         cleanup(&dir);
+    }
+
+    #[test]
+    fn text_centered_md_loads_into_text_centered_asset_kind() {
+        let dir = tempdir("text-centered-load");
+        let panel_dir = dir.join("01-topic").join("1");
+        fs::create_dir_all(&panel_dir).unwrap();
+        fs::write(panel_dir.join("text-centered.md"), "STACK Construction Technologies").unwrap();
+
+        let topics = load_topics(dir.to_str().unwrap()).unwrap();
+        let asset = topics[0].panels[0]
+            .assets
+            .iter()
+            .find(|a| matches!(a.kind, AssetKind::TextCentered { .. }))
+            .expect("should find text-centered asset");
+        let AssetKind::TextCentered { content } = &asset.kind else {
+            panic!("expected TextCentered asset");
+        };
+        assert_eq!(content, "STACK Construction Technologies");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn markdown_paths_puts_text_centered_md_first_like_text_md() {
+        let panel = Panel {
+            assets: vec![
+                Asset { path: PathBuf::from("dir/word-cloud.md"), kind: AssetKind::WordCloud { title: "T".into(), words: vec![], size: WordCloudSize::default() } },
+                Asset { path: PathBuf::from("dir/diagram.md"), kind: AssetKind::Diagram { content: String::new() } },
+                Asset { path: PathBuf::from("dir/text-centered.md"), kind: AssetKind::TextCentered { content: String::new() } },
+            ],
+        };
+        let paths = panel.markdown_paths();
+        let names: Vec<String> = paths.iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).collect();
+        assert_eq!(names, vec!["text-centered.md", "diagram.md", "word-cloud.md"]);
     }
 
     #[test]
