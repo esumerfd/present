@@ -183,6 +183,20 @@ fn should_clear_stale_image(had_image_escape: bool, panel_has_image: bool, panel
     had_image_escape && (!panel_has_image || panel_changed)
 }
 
+/// Whether a firework overlay that was active on the previous frame has just gone away.
+fn firework_just_ended(was_active_last_frame: bool, is_active_now: bool) -> bool {
+    was_active_last_frame && !is_active_now
+}
+
+/// Whether the pending image needs a fresh out-of-band repaint this frame: on first
+/// returning to the Topic screen, right after a firework overlay finishes (its particles
+/// can scar the image -- writing a text glyph into a cell that held inline-image content
+/// permanently discards it there, and nothing else would notice), or whenever the
+/// image's own escape sequence actually changed.
+fn should_repaint_image(just_returned_to_topic: bool, firework_just_ended: bool, escape_changed: bool) -> bool {
+    just_returned_to_topic || firework_just_ended || escape_changed
+}
+
 fn run_app<B: ratatui::backend::Backend + std::io::Write>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -199,8 +213,12 @@ where
     let mut last_image_escape: Option<String> = None;
     let mut last_screen: Option<Screen> = None;
     let mut last_panel_position: Option<(usize, usize)> = None;
+    let mut firework_was_active = false;
 
     loop {
+        let firework_ended = firework_just_ended(firework_was_active, app.firework.is_some());
+        firework_was_active = app.firework.is_some();
+
         let panel_has_image = app.screen == Screen::Topic
             && app
                 .topics
@@ -239,7 +257,8 @@ where
                 // when it closes, even though the image itself hasn't changed, so
                 // force a repaint on the first frame back on Topic.
                 let just_returned_to_topic = last_screen != Some(Screen::Topic);
-                if just_returned_to_topic || last_image_escape.as_deref() != Some(image.escape.as_str()) {
+                let escape_changed = last_image_escape.as_deref() != Some(image.escape.as_str());
+                if should_repaint_image(just_returned_to_topic, firework_ended, escape_changed) {
                     paint_image(terminal, image)?;
                     last_image_escape = Some(image.escape.clone());
                 }
@@ -339,6 +358,45 @@ mod tests {
     fn should_not_clear_when_nothing_was_ever_painted() {
         assert!(!should_clear_stale_image(false, false, false));
         assert!(!should_clear_stale_image(false, true, true));
+    }
+
+    #[test]
+    fn firework_just_ended_true_when_active_last_frame_and_gone_now() {
+        assert!(firework_just_ended(true, false));
+    }
+
+    #[test]
+    fn firework_just_ended_false_while_still_active() {
+        assert!(!firework_just_ended(true, true));
+    }
+
+    #[test]
+    fn firework_just_ended_false_when_it_was_never_active() {
+        assert!(!firework_just_ended(false, false));
+    }
+
+    #[test]
+    fn should_repaint_image_when_just_returned_to_topic() {
+        assert!(should_repaint_image(true, false, false));
+    }
+
+    #[test]
+    fn should_repaint_image_when_firework_just_ended() {
+        // A firework's particles can scar an out-of-band iTerm2 image (writing a text
+        // glyph into a cell that held image content permanently discards it there), so
+        // the image must be repainted once the firework is gone even though its own
+        // escape sequence hasn't changed.
+        assert!(should_repaint_image(false, true, false));
+    }
+
+    #[test]
+    fn should_repaint_image_when_escape_changed() {
+        assert!(should_repaint_image(false, false, true));
+    }
+
+    #[test]
+    fn should_not_repaint_image_when_nothing_triggers_it() {
+        assert!(!should_repaint_image(false, false, false));
     }
 
     #[test]
