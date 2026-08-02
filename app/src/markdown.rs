@@ -18,6 +18,169 @@ impl TableState {
     }
 }
 
+/// Render markdown content to Typst markup, for embedding in the PDF export.
+/// Walks the same `pulldown-cmark` event stream as `render_to_lines`, but emits
+/// Typst syntax instead of styled ratatui spans -- a second sink for the one parse,
+/// keeping panel authoring semantics identical between what's shown live and printed.
+pub fn render_to_typst(content: &str) -> String {
+    let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
+    let parser = Parser::new_ext(content, options);
+
+    let mut out = String::new();
+    let mut in_code_block = false;
+    let mut list_depth: usize = 0;
+    let mut table: Option<TableState> = None;
+
+    for event in parser {
+        match event {
+            Event::Start(Tag::Table(_)) => {
+                table = Some(TableState::new());
+            }
+            Event::Start(Tag::TableHead) => {
+                if let Some(ref mut tbl) = table {
+                    tbl.in_head = true;
+                }
+            }
+            Event::End(TagEnd::TableHead) => {
+                if let Some(ref mut tbl) = table {
+                    tbl.head = std::mem::take(&mut tbl.current_row);
+                    tbl.in_head = false;
+                }
+            }
+            Event::Start(Tag::TableRow) => {
+                if let Some(ref mut tbl) = table {
+                    tbl.current_row.clear();
+                }
+            }
+            Event::End(TagEnd::TableRow) => {
+                if let Some(ref mut tbl) = table {
+                    if !tbl.in_head {
+                        tbl.body_rows.push(std::mem::take(&mut tbl.current_row));
+                    }
+                }
+            }
+            Event::Start(Tag::TableCell) => {
+                if let Some(ref mut tbl) = table {
+                    tbl.current_cell.clear();
+                }
+            }
+            Event::End(TagEnd::TableCell) => {
+                if let Some(ref mut tbl) = table {
+                    tbl.current_row.push(std::mem::take(&mut tbl.current_cell));
+                }
+            }
+            Event::End(TagEnd::Table) => {
+                if let Some(tbl) = table.take() {
+                    out.push_str(&render_typst_table(&tbl.head, &tbl.body_rows));
+                }
+            }
+            Event::Text(text) if table.is_some() => {
+                table.as_mut().unwrap().current_cell.push_str(&text);
+            }
+            Event::Code(text) if table.is_some() => {
+                table.as_mut().unwrap().current_cell.push_str(&text);
+            }
+            _ if table.is_some() => {}
+            Event::Start(Tag::Heading { level, .. }) => {
+                let marker = "=".repeat(heading_level_number(level));
+                out.push_str(&marker);
+                out.push(' ');
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                out.push_str("\n\n");
+            }
+            Event::End(TagEnd::Paragraph) => {
+                out.push_str("\n\n");
+            }
+            Event::Start(Tag::Strong) => out.push('*'),
+            Event::End(TagEnd::Strong) => out.push('*'),
+            Event::Start(Tag::Emphasis) => out.push('_'),
+            Event::End(TagEnd::Emphasis) => out.push('_'),
+            Event::Start(Tag::List(_)) => list_depth += 1,
+            Event::End(TagEnd::List(_)) => {
+                list_depth = list_depth.saturating_sub(1);
+                if list_depth == 0 {
+                    out.push('\n');
+                }
+            }
+            Event::Start(Tag::Item) => {
+                out.push_str(&"  ".repeat(list_depth.saturating_sub(1)));
+                out.push_str("- ");
+            }
+            Event::End(TagEnd::Item) => out.push('\n'),
+            Event::Start(Tag::CodeBlock(_)) => {
+                in_code_block = true;
+                out.push_str("```\n");
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                in_code_block = false;
+                out.push_str("\n```\n\n");
+            }
+            Event::Code(text) => {
+                out.push('`');
+                out.push_str(&text);
+                out.push('`');
+            }
+            Event::Text(text) => {
+                if in_code_block {
+                    out.push_str(&text);
+                } else {
+                    out.push_str(&escape_typst(&text));
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => out.push('\n'),
+            Event::Rule => out.push_str("#line(length: 100%)\n\n"),
+            _ => {}
+        }
+    }
+
+    out
+}
+
+fn render_typst_table(head: &[String], rows: &[Vec<String>]) -> String {
+    let num_cols = head.len().max(rows.iter().map(|r| r.len()).max().unwrap_or(0));
+    if num_cols == 0 {
+        return String::new();
+    }
+
+    let mut out = format!("#table(\n  columns: {num_cols},\n");
+    for cell in head {
+        out.push_str(&format!("  [*{}*],\n", escape_typst(cell)));
+    }
+    for row in rows {
+        for c in 0..num_cols {
+            let cell = row.get(c).map(String::as_str).unwrap_or("");
+            out.push_str(&format!("  [{}],\n", escape_typst(cell)));
+        }
+    }
+    out.push_str(")\n\n");
+    out
+}
+
+fn heading_level_number(level: HeadingLevel) -> usize {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
+    }
+}
+
+/// Escapes Typst markup-mode special characters so arbitrary panel text can't be
+/// misinterpreted as Typst syntax (e.g. a literal `#` starting a function call).
+pub fn escape_typst(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if matches!(ch, '\\' | '*' | '_' | '`' | '#' | '@' | '$' | '[' | ']' | '<') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 pub fn render_to_lines(content: &str) -> Vec<Line<'static>> {
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
     let parser = Parser::new_ext(content, options);
@@ -269,6 +432,58 @@ fn render_table_lines(head: &[String], rows: &[Vec<String>]) -> Vec<Line<'static
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typst_heading_renders_as_equals_signs() {
+        let out = render_to_typst("# Title\n\nBody text");
+        assert!(out.contains("= Title"), "expected '= Title' heading in: {out:?}");
+    }
+
+    #[test]
+    fn typst_h2_renders_with_two_equals_signs() {
+        let out = render_to_typst("## Subtitle");
+        assert!(out.contains("== Subtitle"), "expected '== Subtitle' in: {out:?}");
+    }
+
+    #[test]
+    fn typst_bold_renders_with_asterisks() {
+        let out = render_to_typst("**bold**");
+        assert!(out.contains("*bold*"), "expected '*bold*' in: {out:?}");
+    }
+
+    #[test]
+    fn typst_italic_renders_with_underscores() {
+        let out = render_to_typst("*italic*");
+        assert!(out.contains("_italic_"), "expected '_italic_' in: {out:?}");
+    }
+
+    #[test]
+    fn typst_inline_code_renders_with_backticks() {
+        let out = render_to_typst("`code`");
+        assert!(out.contains("`code`"), "expected backtick-wrapped code in: {out:?}");
+    }
+
+    #[test]
+    fn typst_list_items_render_with_dash_prefix() {
+        let out = render_to_typst("- one\n- two");
+        assert!(out.contains("- one"), "expected '- one' in: {out:?}");
+        assert!(out.contains("- two"), "expected '- two' in: {out:?}");
+    }
+
+    #[test]
+    fn typst_table_renders_as_a_hash_table_call() {
+        let md = "| Key | Action |\n|-----|--------|\n| q | Quit |\n";
+        let out = render_to_typst(md);
+        assert!(out.contains("#table("), "expected a Typst table call in: {out:?}");
+        assert!(out.contains("[*Key*]") && out.contains("[*Action*]"), "expected bold header cells in: {out:?}");
+        assert!(out.contains("[q]") && out.contains("[Quit]"), "expected body cells in: {out:?}");
+    }
+
+    #[test]
+    fn typst_special_characters_in_plain_text_are_escaped() {
+        let out = render_to_typst("Use #hashtags and *not* bold via literal text");
+        assert!(out.contains("\\#hashtags"), "expected escaped '#' in: {out:?}");
+    }
 
     fn lines_to_strings(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect()

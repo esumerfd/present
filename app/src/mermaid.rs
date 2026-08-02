@@ -19,6 +19,12 @@ pub fn parse(file_content: &str) -> (Option<&str>, &str) {
     (Some(file_content.trim()), "")
 }
 
+/// Render a mermaid diagram source to SVG markup, for embedding as a vector
+/// graphic (e.g. in the PDF export). Returns `None` if mmdflux can't render it.
+pub fn render_to_svg(diagram_src: &str) -> Option<String> {
+    render_diagram(diagram_src, OutputFormat::Svg, &RenderConfig::default()).ok()
+}
+
 /// Render a mermaid diagram source to lines of styled ratatui text.
 /// Falls back to displaying the raw source if mmdflux can't render it.
 pub fn render_to_lines(diagram_src: &str) -> Vec<Line<'static>> {
@@ -102,6 +108,19 @@ mod tests {
     #[test]
     fn center_lines_empty_input_returns_empty() {
         assert!(center_lines(vec![], 80, 24).is_empty());
+    }
+
+    #[test]
+    fn render_to_svg_produces_svg_markup_for_valid_diagram() {
+        let svg = render_to_svg("graph TD\n    A-->B");
+        assert!(svg.is_some(), "expected Some(svg) for a valid diagram");
+        assert!(svg.unwrap().contains("<svg"), "expected SVG markup in output");
+    }
+
+    #[test]
+    fn render_to_svg_returns_none_for_unrenderable_diagram() {
+        let svg = render_to_svg("not a mermaid diagram at all {{{");
+        assert!(svg.is_none(), "expected None when mmdflux can't render the source");
     }
 }
 

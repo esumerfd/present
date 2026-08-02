@@ -8,6 +8,7 @@ mod iterm2;
 mod markdown;
 mod mermaid;
 mod notes;
+mod pdf;
 mod state;
 mod ui;
 
@@ -26,6 +27,7 @@ enum Args {
     Help,
     Version,
     Export { assets_dir: String, output: String },
+    Pdf { assets_dir: String, output: String, include_notes: bool },
     Notes { assets_dir: String },
     Run { assets_dir: String, reset: bool },
 }
@@ -40,8 +42,10 @@ fn parse_args(args: Vec<String>) -> Args {
 
     let mut assets_dir: Option<String> = None;
     let mut export_output: Option<String> = None;
+    let mut pdf_output: Option<String> = None;
     let mut reset = false;
     let mut notes = false;
+    let mut pdf_notes = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -49,6 +53,14 @@ fn parse_args(args: Vec<String>) -> Args {
             "--export" => {
                 export_output = args.get(i + 1).cloned();
                 i += 2;
+            }
+            "--pdf" => {
+                pdf_output = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--pdf-notes" => {
+                pdf_notes = true;
+                i += 1;
             }
             "--reset" => {
                 reset = true;
@@ -75,6 +87,9 @@ fn parse_args(args: Vec<String>) -> Args {
     if let Some(output) = export_output {
         return Args::Export { assets_dir, output };
     }
+    if let Some(output) = pdf_output {
+        return Args::Pdf { assets_dir, output, include_notes: pdf_notes };
+    }
     Args::Run { assets_dir, reset }
 }
 
@@ -86,6 +101,8 @@ Arguments:
 
 Options:
   --export <FILE>      Export all topic text and prompts to a file and exit
+  --pdf <FILE>         Render all topics/panels to a PDF and exit
+  --pdf-notes          Include speaker notes as an appendix (with --pdf)
   --reset              Clear saved position and start from the beginning
   --notes              Run as a presenter-notes display (second monitor)
   -h, --help           Print help
@@ -105,6 +122,11 @@ fn main() -> Result<()> {
         }
         Args::Export { assets_dir, output } => {
             export::export_to_file(&assets_dir, &output)?;
+            println!("Exported to {output}");
+            Ok(())
+        }
+        Args::Pdf { assets_dir, output, include_notes } => {
+            pdf::export_to_pdf(&assets_dir, &output, include_notes)?;
             println!("Exported to {output}");
             Ok(())
         }
@@ -522,5 +544,51 @@ mod tests {
             panic!("expected Notes variant");
         };
         assert_eq!(assets_dir, "/tmp");
+    }
+
+    #[test]
+    fn pdf_flag_parses_output_filename() {
+        let args = vec!["--pdf".to_string(), "output.pdf".to_string()];
+        let Args::Pdf { output, .. } = parse_args(args) else {
+            panic!("expected Pdf variant");
+        };
+        assert_eq!(output, "output.pdf");
+    }
+
+    #[test]
+    fn pdf_flag_uses_default_assets_dir() {
+        let args = vec!["--pdf".to_string(), "out.pdf".to_string()];
+        let Args::Pdf { assets_dir, .. } = parse_args(args) else {
+            panic!("expected Pdf variant");
+        };
+        assert_eq!(assets_dir, "assets");
+    }
+
+    #[test]
+    fn pdf_flag_combines_with_assets_dir() {
+        let args = vec!["/tmp".to_string(), "--pdf".to_string(), "out.pdf".to_string()];
+        let Args::Pdf { assets_dir, output, .. } = parse_args(args) else {
+            panic!("expected Pdf variant");
+        };
+        assert_eq!(assets_dir, "/tmp");
+        assert_eq!(output, "out.pdf");
+    }
+
+    #[test]
+    fn pdf_flag_defaults_include_notes_to_false() {
+        let args = vec!["--pdf".to_string(), "out.pdf".to_string()];
+        let Args::Pdf { include_notes, .. } = parse_args(args) else {
+            panic!("expected Pdf variant");
+        };
+        assert!(!include_notes);
+    }
+
+    #[test]
+    fn pdf_notes_flag_sets_include_notes_true() {
+        let args = vec!["--pdf".to_string(), "out.pdf".to_string(), "--pdf-notes".to_string()];
+        let Args::Pdf { include_notes, .. } = parse_args(args) else {
+            panic!("expected Pdf variant");
+        };
+        assert!(include_notes);
     }
 }

@@ -48,6 +48,20 @@ within a fraction of a second) and shows that panel's `notes.md`
 content. Press `q` in the notes window to quit it independently of the
 main presentation.
 
+### PDF export
+
+Render every topic/panel to a PDF leave-behind — one page per panel, in
+presentation order — without running the interactive TUI:
+
+```bash
+present assets/demo --pdf handout.pdf
+```
+
+Text, prompts, diagrams (as vector graphics), word clouds, and images
+all render. `notes.md` is presenter-only and excluded by default; pass
+`--pdf-notes` to append speaker notes as a final section instead of
+interleaving them into the main flow.
+
 ## Asset Directory Structure
 
 ```
